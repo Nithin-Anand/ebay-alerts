@@ -1,0 +1,17 @@
+services:
+  ebay-alerts:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override OLLAMA_URL here if your Ollama runs as a separate Docker service.
+      # host.docker.internal resolves to the Docker host on Mac/Windows.
+      # On Linux, use the host's IP or add `extra_hosts: ["host.docker.internal:host-gateway"]`
+      OLLAMA_URL: http://host.docker.internal:11434
+    volumes:
+      # searches.yaml is read-only so accidental writes inside the container can't corrupt it
+      - ./searches.yaml:/app/searches.yaml:ro
+      # SQLite state lives outside the container so it survives rebuilds and restarts
+      - ./data:/data
+    # Uncomment to expose nothing — this service has no HTTP interface by design
+    # ports: []

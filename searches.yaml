@@ -1,0 +1,88 @@
+# eBay Alerts — search definitions
+# Each entry is one saved search. See app/models.py for full field documentation.
+# Changes here take effect on the next container restart (file is bind-mounted read-only).
+
+# ── Example 1: Camera lens with detailed LLM defect checking ──────────────────
+- id: nikon-50mm-ais
+  name: "Nikon 50mm f/1.8 Ai-S"
+  query: "nikon 50mm 1.8 ais nikkor"
+  poll_interval_seconds: 300
+  sort: newly_listed
+  limit: 50
+  filters:
+    condition: [USED, SELLER_REFURBISHED]
+    buying_options: [FIXED_PRICE, AUCTION]
+    price_min: 30
+    price_max: 150
+    item_location_country: GB
+    delivery_country: GB
+  llm:
+    enabled: true
+    # model: llava   # uncomment to use a vision model for image analysis
+    criteria: |
+      This is a vintage manual-focus Nikon Ai-S camera lens.
+      Recommend BID only if the listing strongly suggests all of the following:
+        - Optics are clean: no fungus, haze, fogging, or internal cleaning marks
+        - No scratches, chips, or coating damage on front or rear elements
+        - Smooth focus ring — no stiffness, grinding, or play mentioned
+        - Aperture blades are clean (not oily) and snappy
+        - Physical body in decent shape (minor cosmetic marks are fine)
+      Recommend SKIP if the description mentions:
+        as-is, for parts, spares or repair, untested, haze, fungus, fog,
+        scratches, stiff focus, oily blades, separation, internal marks,
+        cleaning marks, element damage
+      Be lenient on cosmetic body wear (dings, paint loss) but strict on optical quality.
+    min_score_to_notify: 1
+    skip_verdicts: [skip]
+  notification:
+    pushover_priority: 0
+    pushover_sound: cosmic
+
+# ── Example 2: Electronics buy — no LLM analysis ──────────────────────────────
+- id: raspberry-pi-4-8gb
+  name: "Raspberry Pi 4 8GB"
+  query: "raspberry pi 4 8gb"
+  poll_interval_seconds: 600
+  sort: newly_listed
+  filters:
+    condition: [NEW, USED, SELLER_REFURBISHED]
+    price_max: 80
+    item_location_country: GB
+    delivery_country: GB
+  # No llm: block — every new listing triggers a notification immediately
+  notification:
+    pushover_priority: 0
+
+# ── Example 3: Auction sniper — ending soonest, LLM for value check ───────────
+- id: vintage-leica-m-body
+  name: "Leica M film body"
+  query: "leica m2 m3 m4 film camera body"
+  poll_interval_seconds: 120
+  sort: ending_soonest
+  limit: 20
+  filters:
+    condition: [USED]
+    buying_options: [AUCTION]
+    price_min: 100
+    price_max: 800
+    item_location_country: GB
+  llm:
+    enabled: true
+    criteria: |
+      This is a vintage Leica M rangefinder film camera body.
+      Recommend BID if:
+        - Shutter fires at all speeds (or seller is honest about which speeds are off)
+        - Rangefinder patch is visible and reasonably bright
+        - Light seals condition is mentioned (replaceable, so degraded seals alone
+          are not a dealbreaker unless price doesn't reflect the work needed)
+        - Body is cosmetically acceptable for the price
+      Recommend SKIP if:
+        - Shutter is completely broken / stuck / missing curtain
+        - Rangefinder is completely dead or fogged
+        - Listed as "for parts" or "untested"
+        - Obvious heavy corrosion or liquid damage mentioned
+    min_score_to_notify: 4
+    skip_verdicts: [skip]
+  notification:
+    pushover_priority: 1   # high priority — bypass quiet hours for ending auctions
+    pushover_sound: siren
