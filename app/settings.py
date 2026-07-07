@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"  # default model; overridable per-search
 
+    # Web UI (serves the monitoring/editing interface and REST API).
+    # 0.0.0.0 so the Docker port mapping works; the UI has no authentication,
+    # so only expose it on a trusted network.
+    web_host: str = "0.0.0.0"
+    web_port: int = 8787
+
     # Paths (set automatically inside Docker; override locally if needed)
     searches_file: str = "/app/searches.yaml"
     data_dir: str = "/data"

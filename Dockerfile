@@ -14,7 +14,9 @@ RUN uv pip install --system --no-cache \
     "pyyaml>=6.0" \
     "aiosqlite>=0.20" \
     "tenacity>=8.3" \
-    "structlog>=24.4"
+    "structlog>=24.4" \
+    "fastapi>=0.111" \
+    "uvicorn>=0.30"
 
 COPY app/ ./app/
 

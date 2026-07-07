@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eBay Alerts</title>
+<style>
+  :root {
+    --bg: #101418;
+    --surface: #1a2027;
+    --surface-2: #232b34;
+    --border: #2e3842;
+    --text: #dde4ea;
+    --text-dim: #8b98a5;
+    --accent: #4da3ff;
+    --green: #3fb96f;
+    --amber: #e0a83a;
+    --red: #e0564d;
+    font-size: 15px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 0 1.25rem 4rem; }
+
+  header {
+    display: flex; align-items: baseline; gap: 1rem;
+    padding: 1.5rem 0 1rem;
+  }
+  header h1 { font-size: 1.35rem; margin: 0; }
+  header .summary { color: var(--text-dim); font-size: .9rem; flex: 1; }
+
+  button {
+    font: inherit; color: var(--text);
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: .35rem .8rem; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1016; font-weight: 600; }
+  button.danger:hover { border-color: var(--red); color: var(--red); }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 1rem; }
+  @media (max-width: 560px) { .cards { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1rem 1.1rem;
+  }
+  .card.paused { opacity: .6; }
+  .card h3 { margin: 0; font-size: 1.05rem; }
+  .card .head { display: flex; align-items: center; gap: .6rem; margin-bottom: .4rem; }
+  .card .head .spacer { flex: 1; }
+  .card .query { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; color: var(--text-dim); margin: .2rem 0 .6rem; }
+
+  .chip {
+    display: inline-block; font-size: .72rem; padding: .1rem .5rem;
+    border-radius: 99px; background: var(--surface-2); color: var(--text-dim);
+    border: 1px solid var(--border); margin: 0 .25rem .3rem 0;
+  }
+  .chip.on { color: var(--green); border-color: var(--green); }
+  .chip.warn { color: var(--amber); border-color: var(--amber); }
+
+  .statusline { font-size: .82rem; color: var(--text-dim); margin: .5rem 0; line-height: 1.6; }
+  .statusline .err { color: var(--red); }
+  .statusline b { color: var(--text); font-weight: 600; }
+
+  .actions { display: flex; gap: .5rem; margin-top: .6rem; flex-wrap: wrap; }
+  .actions button { font-size: .82rem; padding: .25rem .7rem; }
+
+  h2 { font-size: 1.05rem; margin: 2.2rem 0 .8rem; display: flex; align-items: center; gap: .8rem; white-space: nowrap; }
+  h2 select { font: inherit; font-size: .85rem; width: auto; max-width: 16rem; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: .2rem .4rem; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: 500; font-size: .78rem; }
+  td a { color: var(--accent); text-decoration: none; }
+  td a:hover { text-decoration: underline; }
+  .badge { font-size: .72rem; padding: .1rem .5rem; border-radius: 4px; font-weight: 600; }
+  .badge.bid { background: rgba(63,185,111,.15); color: var(--green); }
+  .badge.maybe { background: rgba(224,168,58,.15); color: var(--amber); }
+  .badge.skip { background: rgba(139,152,165,.15); color: var(--text-dim); }
+  .muted { color: var(--text-dim); }
+  .empty { color: var(--text-dim); padding: 2rem 0; text-align: center; }
+
+  /* ── Modal form ─────────────────────────────────────────────── */
+  dialog {
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 12px;
+    width: min(680px, calc(100vw - 2rem)); max-height: 90vh;
+    padding: 0;
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog form { padding: 1.3rem 1.5rem; overflow-y: auto; max-height: 90vh; }
+  dialog h2 { margin: 0 0 1rem; }
+  fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 1rem; padding: .8rem 1rem; }
+  legend { font-size: .8rem; color: var(--text-dim); padding: 0 .4rem; }
+  label { display: block; font-size: .8rem; color: var(--text-dim); margin: .6rem 0 .2rem; }
+  label.inline { display: inline-flex; align-items: center; gap: .4rem; margin: .3rem 1rem .3rem 0; color: var(--text); }
+  input[type=text], input[type=number], textarea, select {
+    font: inherit; font-size: .9rem; width: 100%;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: .4rem .6rem;
+  }
+  input:disabled { opacity: .5; }
+  textarea { min-height: 9rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; }
+  .row { display: flex; gap: .8rem; }
+  .row > div { flex: 1; }
+  .hint { font-size: .74rem; color: var(--text-dim); margin-top: .2rem; }
+  .form-actions { display: flex; gap: .6rem; justify-content: flex-end; margin-top: 1.2rem; }
+  #form-error { color: var(--red); font-size: .82rem; white-space: pre-wrap; margin-top: .8rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>eBay Alerts</h1>
+    <span class="summary" id="summary"></span>
+    <button class="primary" onclick="openForm(null)">+ New search</button>
+  </header>
+
+  <div class="cards" id="cards"></div>
+
+  <h2>
+    Recent hits
+    <select id="hits-filter" onchange="loadHits()"><option value="">All searches</option></select>
+  </h2>
+  <div id="hits"></div>
+</main>
+
+<dialog id="modal">
+  <form id="search-form" onsubmit="submitForm(event)">
+    <h2 id="form-title">New search</h2>
+
+    <fieldset>
+      <legend>Search</legend>
+      <div class="row">
+        <div>
+          <label for="f-id">ID (dedupe namespace — cannot change later)</label>
+          <input type="text" id="f-id" required pattern="[a-z0-9][a-z0-9-]*" placeholder="nikon-50mm-ais">
+        </div>
+        <div>
+          <label for="f-name">Name (shown in notifications)</label>
+          <input type="text" id="f-name" required placeholder="Nikon 50mm f/1.8 Ai-S">
+        </div>
+      </div>
+      <label for="f-query">eBay query</label>
+      <input type="text" id="f-query" required placeholder="nikon 50mm 1.8 ais nikkor">
+      <div class="row">
+        <div>
+          <label for="f-interval">Poll interval (seconds, min 60)</label>
+          <input type="number" id="f-interval" min="60" value="600">
+        </div>
+        <div>
+          <label for="f-sort">Sort</label>
+          <select id="f-sort">
+            <option value="newly_listed">Newly listed</option>
+            <option value="ending_soonest">Ending soonest</option>
+            <option value="best_match">Best match</option>
+            <option value="price_asc">Price: low → high</option>
+            <option value="price_desc">Price: high → low</option>
+          </select>
+        </div>
+        <div>
+          <label for="f-limit">Fetch limit (1–200)</label>
+          <input type="number" id="f-limit" min="1" max="200" value="50">
+        </div>
+      </div>
+      <label class="inline"><input type="checkbox" id="f-enabled" checked> Enabled (polling active)</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Filters</legend>
+      <label>Condition (none checked = all)</label>
+      <div id="f-conditions"></div>
+      <label>Buying options (none checked = all)</label>
+      <div id="f-buying"></div>
+      <div class="row">
+        <div>
+          <label for="f-price-min">Min price £</label>
+          <input type="number" id="f-price-min" min="0" step="0.01">
+        </div>
+        <div>
+          <label for="f-price-max">Max price £</label>
+          <input type="number" id="f-price-max" min="0" step="0.01">
+        </div>
+        <div>
+          <label for="f-loc">Seller country</label>
+          <input type="text" id="f-loc" value="GB" maxlength="2">
+        </div>
+        <div>
+          <label for="f-delivery">Delivers to (blank = anywhere)</label>
+          <input type="text" id="f-delivery" value="GB" maxlength="2">
+        </div>
+      </div>
+      <label for="f-categories">Category IDs (comma-separated)</label>
+      <input type="text" id="f-categories" placeholder="e.g. 3323, 78997">
+      <div class="row">
+        <div>
+          <label for="f-sellers">Only these sellers</label>
+          <input type="text" id="f-sellers" placeholder="comma-separated usernames">
+        </div>
+        <div>
+          <label for="f-exclude-sellers">Exclude sellers</label>
+          <input type="text" id="f-exclude-sellers" placeholder="comma-separated usernames">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>LLM analysis</legend>
+      <label class="inline"><input type="checkbox" id="f-llm-enabled" onchange="toggleLlm()"> Analyse new listings with Ollama</label>
+      <div id="llm-fields">
+        <label for="f-criteria">Criteria — what makes a good or bad buy?</label>
+        <textarea id="f-criteria" placeholder="This is a vintage manual-focus lens. Recommend BID only if..."></textarea>
+        <div class="row">
+          <div>
+            <label for="f-min-score">Min score to notify (0 = always)</label>
+            <input type="number" id="f-min-score" min="0" max="10" value="0">
+          </div>
+          <div>
+            <label for="f-model">Model override (blank = default)</label>
+            <input type="text" id="f-model" placeholder="e.g. llava for image analysis">
+          </div>
+        </div>
+        <label>Never notify for these verdicts</label>
+        <div>
+          <label class="inline"><input type="checkbox" class="skip-verdict" value="bid"> bid</label>
+          <label class="inline"><input type="checkbox" class="skip-verdict" value="maybe"> maybe</label>
+          <label class="inline"><input type="checkbox" class="skip-verdict" value="skip" checked> skip</label>
+        </div>
+        <div class="hint">If you untick "Analyse" but leave criteria filled in, the config is kept but disabled.</div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Notification</legend>
+      <div class="row">
+        <div>
+          <label for="f-priority">Pushover priority</label>
+          <select id="f-priority">
+            <option value="-2">-2 · Silent (store only)</option>
+            <option value="-1">-1 · Quiet (no sound)</option>
+            <option value="0" selected>0 · Normal</option>
+            <option value="1">1 · High (bypasses quiet hours)</option>
+            <option value="2">2 · Emergency (repeats until acknowledged)</option>
+          </select>
+        </div>
+        <div>
+          <label for="f-sound">Sound (blank = device default)</label>
+          <select id="f-sound"><option value=""></option></select>
+        </div>
+      </div>
+    </fieldset>
+
+    <div id="form-error"></div>
+    <div class="form-actions">
+      <button type="button" onclick="closeForm()">Cancel</button>
+      <button type="submit" class="primary" id="form-submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+
+const CONDITIONS = ["NEW", "USED", "UNSPECIFIED", "CERTIFIED_REFURBISHED", "SELLER_REFURBISHED", "FOR_PARTS_OR_NOT_WORKING"];
+const BUYING = ["FIXED_PRICE", "AUCTION", "BEST_OFFER"];
+const SOUNDS = ["pushover","bike","bugle","cashregister","classical","cosmic","falling","gamelan","incoming","intermission","magic","mechanical","pianobar","siren","spacealarm","tugboat","alien","climb","persistent","echo","updown","vibrate","none"];
+
+let editingId = null;   // null = creating
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function rel(iso) {
+  if (!iso) return "—";
+  const secs = Math.round((new Date(iso) - Date.now()) / 1000);
+  const abs = Math.abs(secs);
+  const unit = abs >= 3600 ? [Math.round(abs / 3600), "h"] :
+               abs >= 60   ? [Math.round(abs / 60), "m"] : [abs, "s"];
+  return secs <= 0 ? `${unit[0]}${unit[1]} ago` : `in ${unit[0]}${unit[1]}`;
+}
+
+async function api(method, path, body) {
+  const resp = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok) {
+    let detail;
+    try { detail = (await resp.json()).detail; } catch { detail = resp.statusText; }
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail, null, 2));
+  }
+  return resp.status === 204 ? null : resp.json();
+}
+
+// ── Searches list ──────────────────────────────────────────────────────────
+
+let searches = [];
+
+async function loadSearches() {
+  const data = await api("GET", "/api/searches");
+  searches = data.searches;
+  renderCards();
+  renderHitsFilter();
+}
+
+function chips(s) {
+  const f = s.filters, out = [];
+  out.push(`<span class="chip">every ${s.poll_interval_seconds}s</span>`);
+  out.push(`<span class="chip">${esc(s.sort.replaceAll("_", " "))}</span>`);
+  if (f.price_min != null || f.price_max != null)
+    out.push(`<span class="chip">£${f.price_min ?? "0"}–£${f.price_max ?? "∞"}</span>`);
+  if (f.condition?.length)
+    out.push(`<span class="chip">${esc(f.condition.map(c => c.replaceAll("_", " ").toLowerCase()).join(", "))}</span>`);
+  if (f.buying_options?.length)
+    out.push(`<span class="chip">${esc(f.buying_options.map(b => b.replaceAll("_", " ").toLowerCase()).join(", "))}</span>`);
+  if (s.llm)
+    out.push(`<span class="chip ${s.llm.enabled ? "on" : ""}">LLM ${s.llm.enabled ? "on" : "off"}${s.llm.min_score_to_notify ? ` · score ≥ ${s.llm.min_score_to_notify}` : ""}</span>`);
+  if (s.notification.pushover_priority !== 0)
+    out.push(`<span class="chip warn">priority ${s.notification.pushover_priority}</span>`);
+  return out.join("");
+}
+
+function renderCards() {
+  const active = searches.filter(s => s.enabled).length;
+  $("summary").textContent = `${searches.length} search${searches.length === 1 ? "" : "es"} · ${active} active`;
+
+  if (!searches.length) {
+    $("cards").innerHTML = `<div class="empty">No searches yet — create one to start polling eBay.</div>`;
+    return;
+  }
+
+  $("cards").innerHTML = searches.map(s => {
+    const st = s.status, hits = s.hits;
+    const statusline = s.enabled ? `
+      Last poll <b>${rel(st.last_poll_at)}</b> · next <b>${rel(st.next_poll_at)}</b> ·
+      ${st.last_result_count ?? "—"} results · <b>${st.new_items_total}</b> new this session<br>
+      Hits: <b>${hits.total}</b> total, <b>${hits.notified}</b> notified · last ${rel(hits.last_hit_at)}
+      ${st.last_error ? `<br><span class="err">Error: ${esc(st.last_error)}</span>` : ""}`
+      : `Paused · Hits: <b>${hits.total}</b> total, <b>${hits.notified}</b> notified`;
+
+    return `
+    <div class="card ${s.enabled ? "" : "paused"}">
+      <div class="head">
+        <h3>${esc(s.name)}</h3>
+        <span class="chip">${esc(s.id)}</span>
+        <span class="spacer"></span>
+        ${s.enabled ? "" : `<span class="chip warn">paused</span>`}
+      </div>
+      <div class="query">${esc(s.query)}</div>
+      <div>${chips(s)}</div>
+      <div class="statusline">${statusline}</div>
+      <div class="actions">
+        <button onclick="pollNow('${esc(s.id)}')" ${s.enabled ? "" : "disabled"}>Poll now</button>
+        <button onclick="togglePause('${esc(s.id)}')">${s.enabled ? "Pause" : "Resume"}</button>
+        <button onclick="openForm('${esc(s.id)}')">Edit</button>
+        <button class="danger" onclick="deleteSearch('${esc(s.id)}')">Delete</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function pollNow(id) {
+  await api("POST", `/api/searches/${id}/poll`);
+  setTimeout(loadSearches, 1500);
+}
+
+async function togglePause(id) {
+  const s = searches.find(x => x.id === id);
+  const body = { ...s, enabled: !s.enabled };
+  delete body.status; delete body.hits;
+  await api("PUT", `/api/searches/${id}`, body);
+  await loadSearches();
+}
+
+async function deleteSearch(id) {
+  const s = searches.find(x => x.id === id);
+  if (!confirm(`Delete "${s.name}"? Its hit history is kept in the database.`)) return;
+  await api("DELETE", `/api/searches/${id}`);
+  await loadSearches();
+  await loadHits();
+}
+
+// ── Hits table ─────────────────────────────────────────────────────────────
+
+function renderHitsFilter() {
+  const sel = $("hits-filter"), current = sel.value;
+  sel.innerHTML = `<option value="">All searches</option>` +
+    searches.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+  sel.value = current;
+}
+
+async function loadHits() {
+  const sid = $("hits-filter").value;
+  const data = await api("GET", `/api/hits?limit=100${sid ? `&search_id=${encodeURIComponent(sid)}` : ""}`);
+  if (!data.hits.length) {
+    $("hits").innerHTML = `<div class="empty">No hits recorded yet.</div>`;
+    return;
+  }
+  const names = Object.fromEntries(searches.map(s => [s.id, s.name]));
+  $("hits").innerHTML = `
+    <table>
+      <tr><th>When</th><th>Search</th><th>Item</th><th>Price</th><th>Verdict</th><th>Notified</th></tr>
+      ${data.hits.map(h => `
+      <tr>
+        <td class="muted" title="${esc(h.created_at)}">${rel(h.created_at)}</td>
+        <td>${esc(names[h.search_id] ?? h.search_id)}</td>
+        <td><a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.title)}</a></td>
+        <td>£${Number(h.price).toFixed(2)}</td>
+        <td>${h.verdict ? `<span class="badge ${esc(h.verdict)}">${esc(h.verdict)} ${h.score}/10</span>` : `<span class="muted">—</span>`}</td>
+        <td>${h.notified ? "✓" : `<span class="muted">✕</span>`}</td>
+      </tr>`).join("")}
+    </table>`;
+}
+
+// ── Create / edit form ─────────────────────────────────────────────────────
+
+function checkboxGroup(containerId, values, cls) {
+  $(containerId).innerHTML = values.map(v =>
+    `<label class="inline"><input type="checkbox" class="${cls}" value="${v}"> ${v.replaceAll("_", " ").toLowerCase()}</label>`
+  ).join("");
+}
+checkboxGroup("f-conditions", CONDITIONS, "cond");
+checkboxGroup("f-buying", BUYING, "buy");
+$("f-sound").innerHTML = `<option value="">(default)</option>` + SOUNDS.map(s => `<option>${s}</option>`).join("");
+
+function toggleLlm() {
+  $("llm-fields").style.display = $("f-llm-enabled").checked || $("f-criteria").value ? "" : "none";
+}
+
+function setChecks(cls, values) {
+  document.querySelectorAll(`.${cls}`).forEach(cb => { cb.checked = (values ?? []).includes(cb.value); });
+}
+const getChecks = cls => [...document.querySelectorAll(`.${cls}:checked`)].map(cb => cb.value);
+
+function openForm(id) {
+  editingId = id;
+  const s = id ? searches.find(x => x.id === id) : null;
+  $("form-title").textContent = s ? `Edit: ${s.name}` : "New search";
+  $("form-error").textContent = "";
+  $("f-id").disabled = !!s;
+
+  $("f-id").value = s?.id ?? "";
+  $("f-name").value = s?.name ?? "";
+  $("f-query").value = s?.query ?? "";
+  $("f-interval").value = s?.poll_interval_seconds ?? 600;
+  $("f-sort").value = s?.sort ?? "newly_listed";
+  $("f-limit").value = s?.limit ?? 50;
+  $("f-enabled").checked = s?.enabled ?? true;
+
+  const f = s?.filters ?? {};
+  setChecks("cond", f.condition);
+  setChecks("buy", f.buying_options);
+  $("f-price-min").value = f.price_min ?? "";
+  $("f-price-max").value = f.price_max ?? "";
+  $("f-loc").value = f.item_location_country ?? "GB";
+  $("f-delivery").value = f.delivery_country ?? (s ? "" : "GB");
+  $("f-categories").value = (f.category_ids ?? []).join(", ");
+  $("f-sellers").value = (f.sellers ?? []).join(", ");
+  $("f-exclude-sellers").value = (f.exclude_sellers ?? []).join(", ");
+
+  $("f-llm-enabled").checked = s?.llm?.enabled ?? false;
+  $("f-criteria").value = s?.llm?.criteria ?? "";
+  $("f-min-score").value = s?.llm?.min_score_to_notify ?? 0;
+  $("f-model").value = s?.llm?.model ?? "";
+  setChecks("skip-verdict", s ? (s.llm?.skip_verdicts ?? []) : ["skip"]);
+  toggleLlm();
+
+  $("f-priority").value = s?.notification?.pushover_priority ?? 0;
+  $("f-sound").value = s?.notification?.pushover_sound ?? "";
+
+  $("modal").showModal();
+}
+
+function closeForm() { $("modal").close(); }
+
+const csv = id => $(id).value.split(",").map(x => x.trim()).filter(Boolean);
+const orNull = arr => arr.length ? arr : null;
+const numOrNull = id => $(id).value === "" ? null : Number($(id).value);
+
+function buildBody() {
+  const llmEnabled = $("f-llm-enabled").checked;
+  const criteria = $("f-criteria").value.trim();
+  let llm = null;
+  if (llmEnabled || criteria) {
+    llm = {
+      enabled: llmEnabled,
+      criteria: criteria,
+      min_score_to_notify: Number($("f-min-score").value || 0),
+      skip_verdicts: getChecks("skip-verdict"),
+      model: $("f-model").value.trim() || null,
+    };
+  }
+  return {
+    id: $("f-id").value.trim(),
+    name: $("f-name").value.trim(),
+    query: $("f-query").value.trim(),
+    enabled: $("f-enabled").checked,
+    poll_interval_seconds: Number($("f-interval").value || 600),
+    sort: $("f-sort").value,
+    limit: Number($("f-limit").value || 50),
+    filters: {
+      condition: orNull(getChecks("cond")),
+      buying_options: orNull(getChecks("buy")),
+      price_min: numOrNull("f-price-min"),
+      price_max: numOrNull("f-price-max"),
+      item_location_country: $("f-loc").value.trim().toUpperCase(),
+      delivery_country: $("f-delivery").value.trim().toUpperCase() || null,
+      category_ids: orNull(csv("f-categories")),
+      sellers: orNull(csv("f-sellers")),
+      exclude_sellers: orNull(csv("f-exclude-sellers")),
+    },
+    llm: llm,
+    notification: {
+      pushover_priority: Number($("f-priority").value),
+      pushover_sound: $("f-sound").value || null,
+    },
+  };
+}
+
+async function submitForm(event) {
+  event.preventDefault();
+  const body = buildBody();
+  if (body.llm && !body.llm.criteria) {
+    $("form-error").textContent = "LLM analysis is enabled but the criteria field is empty.";
+    return;
+  }
+  $("form-submit").disabled = true;
+  try {
+    if (editingId) await api("PUT", `/api/searches/${editingId}`, body);
+    else await api("POST", "/api/searches", body);
+    closeForm();
+    await loadSearches();
+  } catch (err) {
+    $("form-error").textContent = err.message;
+  } finally {
+    $("form-submit").disabled = false;
+  }
+}
+
+// ── Init + refresh ─────────────────────────────────────────────────────────
+
+loadSearches();
+loadHits();
+setInterval(() => {
+  if (!$("modal").open) { loadSearches(); loadHits(); }
+}, 15000);
+</script>
+</body>
+</html>

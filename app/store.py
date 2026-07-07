@@ -105,3 +105,37 @@ class Store:
             (search_id, item_id, title, price, url, verdict, score, int(notified), now),
         )
         await self._db.commit()
+
+    async def recent_hits(
+        self, search_id: str | None = None, limit: int = 100
+    ) -> list[dict]:
+        """Most recent hits, newest first, optionally scoped to one search."""
+        query = (
+            "SELECT search_id, item_id, title, price, url, verdict, score, "
+            "notified, created_at FROM hits"
+        )
+        params: list = []
+        if search_id is not None:
+            query += " WHERE search_id = ?"
+            params.append(search_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        async with self._db.execute(query, params) as cursor:
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) async for row in cursor]
+
+    async def hit_stats(self) -> dict[str, dict]:
+        """Per-search hit counts: {search_id: {total, notified, last_hit_at}}."""
+        async with self._db.execute(
+            "SELECT search_id, COUNT(*), SUM(notified), MAX(created_at) "
+            "FROM hits GROUP BY search_id"
+        ) as cursor:
+            return {
+                row[0]: {
+                    "total": row[1],
+                    "notified": row[2] or 0,
+                    "last_hit_at": row[3],
+                }
+                async for row in cursor
+            }

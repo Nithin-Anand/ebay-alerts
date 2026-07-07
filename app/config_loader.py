@@ -47,3 +47,47 @@ def load_searches(path: str | Path) -> list[Search]:
 
     log.info("searches loaded", count=len(searches), ids=ids)
     return searches
+
+
+class _BlockStyleDumper(yaml.SafeDumper):
+    """SafeDumper that renders multi-line strings as literal blocks (|)."""
+
+
+def _str_representer(dumper: yaml.Dumper, value: str) -> yaml.ScalarNode:
+    if "\n" in value:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value)
+
+
+_BlockStyleDumper.add_representer(str, _str_representer)
+
+
+_SAVE_HEADER = """\
+# eBay Alerts — search definitions
+# Each entry is one saved search. See docs/searches.md for the field reference.
+# This file is rewritten by the web UI on every change, so hand-written
+# comments below this header will be lost. Manual edits are picked up on
+# the next restart.
+
+"""
+
+
+def save_searches(path: str | Path, searches: list[Search]) -> None:
+    """
+    Write the search list back to searches.yaml.
+
+    Fields still at their default value are omitted to keep the file readable.
+    The file is written in place (truncate + write) rather than via an atomic
+    rename: with a Docker single-file bind mount, replacing the file would
+    change the inode and detach it from the mount on the host.
+    """
+    payload = [s.model_dump(mode="json", exclude_defaults=True) for s in searches]
+    text = _SAVE_HEADER + yaml.dump(
+        payload,
+        Dumper=_BlockStyleDumper,
+        sort_keys=False,
+        allow_unicode=True,
+        width=100,
+    )
+    Path(path).write_text(text, encoding="utf-8")
+    log.info("searches saved", count=len(searches), path=str(path))

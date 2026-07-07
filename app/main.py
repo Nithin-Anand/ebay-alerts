@@ -17,15 +17,17 @@ from decimal import Decimal
 from pathlib import Path
 
 import structlog
+import uvicorn
 
 from .config_loader import load_searches
 from .ebay.auth import EbayAuth
 from .ebay.client import EbayClient
 from .llm import OllamaClient
 from .notifier import PushoverNotifier
-from .scheduler import Deps, run_all
+from .scheduler import Deps, SearchManager
 from .settings import Settings
 from .store import Store
+from .web import create_app
 
 
 def _configure_logging(level: str) -> None:
@@ -63,8 +65,7 @@ async def main() -> None:
 
     searches = load_searches(settings.searches_file)
     if not searches:
-        log.error("no searches defined — add at least one entry to searches.yaml")
-        sys.exit(1)
+        log.warning("no searches defined — create one via the web UI")
 
     data_dir = Path(settings.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -78,13 +79,26 @@ async def main() -> None:
     notifier = PushoverNotifier(settings.pushover_token, settings.pushover_user)
 
     deps = Deps(ebay=ebay, store=store, notifier=notifier, ollama=ollama)
+    manager = SearchManager(searches, deps, settings.searches_file)
 
-    log.info("scheduler starting", search_count=len(searches))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            create_app(manager, store),
+            host=settings.web_host,
+            port=settings.web_port,
+            log_config=None,   # inherit root logging configured above
+            access_log=False,
+        )
+    )
+
+    manager.start_all()
+    log.info("web ui starting", host=settings.web_host, port=settings.web_port)
     try:
-        await run_all(searches, deps)
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        log.info("shutting down")
+        # serve() blocks until SIGINT/SIGTERM, which uvicorn handles for us
+        await server.serve()
     finally:
+        log.info("shutting down")
+        await manager.shutdown()
         await ebay.aclose()
         await ollama.aclose()
         await notifier.aclose()

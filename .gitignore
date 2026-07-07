@@ -1,0 +1,12 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Runtime state (SQLite db + WAL files); keep the directory itself
+data/*
+!data/.gitkeep

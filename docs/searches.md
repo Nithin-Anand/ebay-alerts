@@ -4,6 +4,12 @@ Searches are defined in `searches.yaml` as a YAML list. Each entry is one
 independent alert that polls eBay on its own interval, optionally analyses new
 listings with a local Ollama LLM, and sends a Pushover notification.
 
+Searches can be created and edited either through the **web UI** (default
+`http://localhost:8787`) or by editing this file directly. UI changes take
+effect immediately and are written back to the file; manual file edits are
+picked up on the next restart. Note the UI rewrites the file on every change,
+so hand-written comments in it will be lost.
+
 ```yaml
 - id: my-search
   name: "Human label"
@@ -18,6 +24,7 @@ listings with a local Ollama LLM, and sends a Pushover notification.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `id` | string | **required** | Stable slug used as the dedupe namespace in SQLite. Use lowercase letters, numbers, and hyphens. **Changing this value resets seen-items history for the search** — you will be re-alerted for listings already in the database. |
+| `enabled` | boolean | `true` | Set to `false` to pause the search without deleting it. Seen-items history is kept, so re-enabling only alerts on listings that appeared while paused. |
 | `name` | string | **required** | Human-readable label shown in Pushover notification titles. |
 | `query` | string | **required** | eBay keyword search string, exactly as you'd type it in the search bar. |
 | `poll_interval_seconds` | integer | `600` | How often to poll eBay. Minimum `60`. High-value or time-sensitive searches may warrant `120`–`300`. |

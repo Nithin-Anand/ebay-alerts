@@ -1,6 +1,6 @@
 # eBay Alerts
 
-Polls UK eBay for saved searches, analyses new listings with a local Ollama LLM, and sends bid recommendations to your phone via Pushover.
+Polls UK eBay for saved searches, analyses new listings with a local Ollama LLM, and sends bid recommendations to your phone via Pushover. A built-in web UI (default `http://localhost:8787`) lets you monitor searches, browse hits, and edit search configs without restarting.
 
 ```
 New listing found
@@ -82,53 +82,69 @@ docker compose logs -f
 ### Run locally (without Docker)
 
 ```bash
-pip install httpx pydantic pydantic-settings pyyaml aiosqlite tenacity structlog
+pip install httpx pydantic pydantic-settings pyyaml aiosqlite tenacity structlog fastapi uvicorn
 SEARCHES_FILE=./searches.yaml DATA_DIR=./data python -m app.main
 ```
 
 ---
 
-## 4. Configuring searches
+## 4. Web UI
 
-See **[docs/searches.md](docs/searches.md)** for the full field reference, including all filter options, sort values, condition codes, LLM criteria guidance, and notification settings.
+Open **http://localhost:8787** once the service is running.
+
+- **Monitor** — each search shows its last/next poll time, result counts, new items this session, hit totals, and any polling errors.
+- **Edit** — create, edit, pause/resume, and delete searches; changes apply immediately (the affected poller restarts) and are persisted back to `searches.yaml`.
+- **Poll now** — trigger an immediate poll instead of waiting for the next interval.
+- **Recent hits** — every new listing found, with its LLM verdict, score, and whether it was notified; links open the eBay listing.
+
+The UI has **no authentication**. The compose file binds it to `127.0.0.1` on the host; if you change that to expose it on your LAN, make sure the network is trusted, and never expose it to the internet.
+
+Because the UI rewrites `searches.yaml` on every change, hand-written comments in that file are lost the first time you save from the UI. Manual file edits still work — they're picked up on the next restart.
 
 ---
 
-## 5. Architecture
+## 5. Configuring searches
+
+Searches can be managed entirely from the web UI, or by editing `searches.yaml` by hand. See **[docs/searches.md](docs/searches.md)** for the full field reference, including all filter options, sort values, condition codes, LLM criteria guidance, and notification settings.
+
+---
+
+## 6. Architecture
 
 ```
-searches.yaml → config_loader → list[Search]
+searches.yaml ⇄ config_loader ⇄ list[Search]
                                      │
-                    ┌────────────────┼────────────────┐
-                    │ scheduler (asyncio.TaskGroup)   │
-                    │  one task per Search            │
-                    └────────────┬───────────────────┘
-                                 │ poll every N seconds
-                                 ▼
-                         ebay/client.py
-                         Browse API → list[Listing]
-                                 │
-                                 ▼
-                           store.py (SQLite)
-                         filter_unseen() → new items only
-                                 │
-                          ┌──────┴──────┐
-                          │ llm.py      │  (if llm: configured)
-                          │ Ollama chat │
-                          └──────┬──────┘
-                                 │ Verdict
-                                 ▼
-                         notifier.py
-                         Pushover POST
+              ┌──────────────────────┼──────────────────────┐
+              │ scheduler.SearchManager                     │
+              │  one asyncio task per enabled Search        │◀── web.py (FastAPI)
+              │  add / update / remove / pause at runtime   │    UI + REST API :8787
+              └────────────┬────────────────────────────────┘
+                           │ poll every N seconds
+                           ▼
+                   ebay/client.py
+                   Browse API → list[Listing]
+                           │
+                           ▼
+                     store.py (SQLite)
+                   filter_unseen() → new items only
+                           │
+                    ┌──────┴──────┐
+                    │ llm.py      │  (if llm: configured)
+                    │ Ollama chat │
+                    └──────┬──────┘
+                           │ Verdict
+                           ▼
+                   notifier.py
+                   Pushover POST
 ```
 
 State file: `data/state.sqlite`
 - `seen_items` — dedupe table; item_id + search_id marked on first sight
-- `hits` — audit log of every new item found, with LLM verdict and notified flag
+- `hits` — audit log of every new item found, with LLM verdict and notified flag (browsable in the web UI)
 
 ---
 
-## 6. On Linux Docker hosts (Ollama access)
+## 7. On Linux Docker hosts (Ollama access)
 
 Docker Desktop for Mac/Windows resolves `host.docker.internal` automatically. On Linux you need to add:
 

@@ -1,0 +1,12 @@
+# Keep secrets and local state out of the image build context.
+# (docker compose still reads .env from the host at runtime via env_file —
+# this only stops it being baked into the image.)
+.env
+.git/
+.venv/
+data/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+tests/
+docs/

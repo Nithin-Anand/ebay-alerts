@@ -8,10 +8,12 @@ services:
       # host.docker.internal resolves to the Docker host on Mac/Windows.
       # On Linux, use the host's IP or add `extra_hosts: ["host.docker.internal:host-gateway"]`
       OLLAMA_URL: http://host.docker.internal:11434
+    ports:
+      # Web UI for monitoring and editing searches. No authentication —
+      # bind to 127.0.0.1 (as below) or a LAN-only interface, never the internet.
+      - "127.0.0.1:8787:8787"
     volumes:
-      # searches.yaml is read-only so accidental writes inside the container can't corrupt it
-      - ./searches.yaml:/app/searches.yaml:ro
+      # Read-write: the web UI persists search edits back to this file
+      - ./searches.yaml:/app/searches.yaml
       # SQLite state lives outside the container so it survives rebuilds and restarts
       - ./data:/data
-    # Uncomment to expose nothing — this service has no HTTP interface by design
-    # ports: []

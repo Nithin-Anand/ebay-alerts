@@ -221,10 +221,19 @@ class Search(BaseModel):
     """
 
     id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
         description=(
             "Stable slug used as the dedupe namespace in SQLite. "
             "Use lowercase letters, numbers, and hyphens only. "
             "Example: 'nikon-50mm-ai-s'"
+        ),
+    )
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Set to false to pause this search without deleting it. "
+            "Paused searches keep their seen-items history, so re-enabling "
+            "only alerts on listings that appeared while paused."
         ),
     )
     name: str = Field(

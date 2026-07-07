@@ -1,6 +1,9 @@
 # eBay Alerts — search definitions
-# Each entry is one saved search. See app/models.py for full field documentation.
-# Changes here take effect on the next container restart (file is bind-mounted read-only).
+# Each entry is one saved search. See docs/searches.md for the field reference.
+# Manual edits here take effect on the next restart. Searches can also be
+# managed from the web UI (http://localhost:8787), which applies changes
+# immediately — but note the UI rewrites this file on save, so comments
+# (including these) are lost the first time you save from the UI.
 
 # ── Example 1: Camera lens with detailed LLM defect checking ──────────────────
 - id: nikon-50mm-ais
@@ -10,8 +13,8 @@
   sort: newly_listed
   limit: 50
   filters:
-    condition: [USED, SELLER_REFURBISHED]
-    buying_options: [FIXED_PRICE, AUCTION]
+    condition: [ USED, SELLER_REFURBISHED ]
+    buying_options: [ FIXED_PRICE, AUCTION ]
     price_min: 30
     price_max: 150
     item_location_country: GB
@@ -33,56 +36,56 @@
         cleaning marks, element damage
       Be lenient on cosmetic body wear (dings, paint loss) but strict on optical quality.
     min_score_to_notify: 1
-    skip_verdicts: [skip]
+    skip_verdicts: [ skip ]
   notification:
     pushover_priority: 0
     pushover_sound: cosmic
 
 # ── Example 2: Electronics buy — no LLM analysis ──────────────────────────────
-- id: raspberry-pi-4-8gb
-  name: "Raspberry Pi 4 8GB"
-  query: "raspberry pi 4 8gb"
-  poll_interval_seconds: 600
-  sort: newly_listed
-  filters:
-    condition: [NEW, USED, SELLER_REFURBISHED]
-    price_max: 80
-    item_location_country: GB
-    delivery_country: GB
-  # No llm: block — every new listing triggers a notification immediately
-  notification:
-    pushover_priority: 0
+# - id: raspberry-pi-4-8gb
+#   name: "Raspberry Pi 4 8GB"
+#   query: "raspberry pi 4 8gb"
+#   poll_interval_seconds: 600
+#   sort: newly_listed
+#   filters:
+#     condition: [NEW, USED, SELLER_REFURBISHED]
+#     price_max: 80
+#     item_location_country: GB
+#     delivery_country: GB
+#   # No llm: block — every new listing triggers a notification immediately
+#   notification:
+#     pushover_priority: 0
 
-# ── Example 3: Auction sniper — ending soonest, LLM for value check ───────────
-- id: vintage-leica-m-body
-  name: "Leica M film body"
-  query: "leica m2 m3 m4 film camera body"
-  poll_interval_seconds: 120
-  sort: ending_soonest
-  limit: 20
-  filters:
-    condition: [USED]
-    buying_options: [AUCTION]
-    price_min: 100
-    price_max: 800
-    item_location_country: GB
-  llm:
-    enabled: true
-    criteria: |
-      This is a vintage Leica M rangefinder film camera body.
-      Recommend BID if:
-        - Shutter fires at all speeds (or seller is honest about which speeds are off)
-        - Rangefinder patch is visible and reasonably bright
-        - Light seals condition is mentioned (replaceable, so degraded seals alone
-          are not a dealbreaker unless price doesn't reflect the work needed)
-        - Body is cosmetically acceptable for the price
-      Recommend SKIP if:
-        - Shutter is completely broken / stuck / missing curtain
-        - Rangefinder is completely dead or fogged
-        - Listed as "for parts" or "untested"
-        - Obvious heavy corrosion or liquid damage mentioned
-    min_score_to_notify: 4
-    skip_verdicts: [skip]
-  notification:
-    pushover_priority: 1   # high priority — bypass quiet hours for ending auctions
-    pushover_sound: siren
+# # ── Example 3: Auction sniper — ending soonest, LLM for value check ───────────
+# - id: vintage-leica-m-body
+#   name: "Leica M film body"
+#   query: "leica m2 m3 m4 film camera body"
+#   poll_interval_seconds: 120
+#   sort: ending_soonest
+#   limit: 20
+#   filters:
+#     condition: [USED]
+#     buying_options: [AUCTION]
+#     price_min: 100
+#     price_max: 800
+#     item_location_country: GB
+#   llm:
+#     enabled: true
+#     criteria: |
+#       This is a vintage Leica M rangefinder film camera body.
+#       Recommend BID if:
+#         - Shutter fires at all speeds (or seller is honest about which speeds are off)
+#         - Rangefinder patch is visible and reasonably bright
+#         - Light seals condition is mentioned (replaceable, so degraded seals alone
+#           are not a dealbreaker unless price doesn't reflect the work needed)
+#         - Body is cosmetically acceptable for the price
+#       Recommend SKIP if:
+#         - Shutter is completely broken / stuck / missing curtain
+#         - Rangefinder is completely dead or fogged
+#         - Listed as "for parts" or "untested"
+#         - Obvious heavy corrosion or liquid damage mentioned
+#     min_score_to_notify: 4
+#     skip_verdicts: [skip]
+#   notification:
+#     pushover_priority: 1   # high priority — bypass quiet hours for ending auctions
+#     pushover_sound: siren
