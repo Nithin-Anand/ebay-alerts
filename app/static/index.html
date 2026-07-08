@@ -84,6 +84,10 @@
   .badge.bid { background: rgba(63,185,111,.15); color: var(--green); }
   .badge.maybe { background: rgba(224,168,58,.15); color: var(--amber); }
   .badge.skip { background: rgba(139,152,165,.15); color: var(--text-dim); }
+  .tag { display: inline-block; font-size: .7rem; padding: .05rem .4rem; border-radius: 4px; white-space: nowrap; border: 1px solid var(--border); color: var(--text-dim); }
+  .tag.auction { color: var(--amber); border-color: var(--amber); }
+  .tag.bin { color: var(--accent); border-color: var(--accent); }
+  .tag.offer { color: var(--green); border-color: var(--green); }
   .muted { color: var(--text-dim); }
   .empty { color: var(--text-dim); padding: 2rem 0; text-align: center; }
 
@@ -409,17 +413,36 @@ async function loadHits() {
   const names = Object.fromEntries(searches.map(s => [s.id, s.name]));
   $("hits").innerHTML = `
     <table>
-      <tr><th>When</th><th>Search</th><th>Item</th><th>Price</th><th>Verdict</th><th>Notified</th></tr>
-      ${data.hits.map(h => `
+      <tr><th>When</th><th>Search</th><th>Item</th><th>Type</th><th>Price</th><th>Verdict</th><th>Notified</th></tr>
+      ${data.hits.map(h => {
+        const opts = (h.buying_options ?? "").split(",").filter(Boolean);
+        const isAuction = opts.includes("AUCTION");
+        return `
       <tr>
         <td class="muted" title="${esc(h.created_at)}">${rel(h.created_at)}</td>
         <td>${esc(names[h.search_id] ?? h.search_id)}</td>
         <td><a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.title)}</a></td>
-        <td>£${Number(h.price).toFixed(2)}</td>
+        <td>${purchaseTypes(opts)}</td>
+        <td>£${Number(h.price).toFixed(2)}${isAuction ? ` <span class="muted">bid</span>` : ""}</td>
         <td>${h.verdict ? `<span class="badge ${esc(h.verdict)}">${esc(h.verdict)} ${h.score}/10</span>` : `<span class="muted">—</span>`}</td>
         <td>${h.notified ? "✓" : `<span class="muted">✕</span>`}</td>
-      </tr>`).join("")}
+      </tr>`;
+      }).join("")}
     </table>`;
+}
+
+// Render the buying-option tags for a hit: Buy It Now / Auction / both,
+// plus a Best offer tag when the seller accepts offers.
+function purchaseTypes(opts) {
+  if (!opts.length) return `<span class="muted">—</span>`;
+  const isAuction = opts.includes("AUCTION");
+  const isFixed = opts.includes("FIXED_PRICE");
+  const tags = [];
+  if (isAuction && isFixed) tags.push(`<span class="tag auction">Auction + BIN</span>`);
+  else if (isAuction) tags.push(`<span class="tag auction">Auction</span>`);
+  else if (isFixed) tags.push(`<span class="tag bin">Buy It Now</span>`);
+  if (opts.includes("BEST_OFFER")) tags.push(`<span class="tag offer">Best offer</span>`);
+  return tags.join(" ");
 }
 
 // ── Create / edit form ─────────────────────────────────────────────────────

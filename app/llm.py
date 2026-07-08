@@ -41,7 +41,8 @@ def _build_user_prompt(listing: Listing, criteria: str) -> str:
         "",
         "Listing details:",
         f"  Title:          {listing.title}",
-        f"  Price:          £{listing.price} {listing.currency}",
+        f"  Price:          £{listing.display_price} {listing.currency}"
+        f"{' (current bid)' if listing.is_auction else ''}",
         f"  Condition:      {listing.condition or 'Not specified'}",
         f"  Buying options: {', '.join(listing.buying_options) or 'Not specified'}",
     ]

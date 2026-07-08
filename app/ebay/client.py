@@ -68,6 +68,15 @@ def _parse_listing(item: dict) -> Listing:
     price = Decimal(str(price_block.get("value", "0")))
     currency = price_block.get("currency", "GBP")
 
+    # Auction listings carry the live high bid in currentBidPrice; it is
+    # absent for pure fixed-price listings.
+    bid_block = item.get("currentBidPrice")
+    current_bid_price = (
+        Decimal(str(bid_block["value"]))
+        if bid_block and bid_block.get("value") is not None
+        else None
+    )
+
     primary_image = item.get("image", {}).get("imageUrl")
     extra_images = [
         img["imageUrl"]
@@ -81,6 +90,7 @@ def _parse_listing(item: dict) -> Listing:
         item_id=item["itemId"],
         title=item.get("title", ""),
         price=price,
+        current_bid_price=current_bid_price,
         currency=currency,
         condition=item.get("condition"),
         buying_options=item.get("buyingOptions", []),

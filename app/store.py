@@ -17,18 +17,25 @@ CREATE TABLE IF NOT EXISTS seen_items (
 
 _CREATE_HITS = """
 CREATE TABLE IF NOT EXISTS hits (
-    search_id  TEXT NOT NULL,
-    item_id    TEXT NOT NULL,
-    title      TEXT,
-    price      REAL,
-    url        TEXT,
-    verdict    TEXT,
-    score      INTEGER,
-    notified   INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
+    search_id      TEXT NOT NULL,
+    item_id        TEXT NOT NULL,
+    title          TEXT,
+    price          REAL,
+    buying_options TEXT,
+    url            TEXT,
+    verdict        TEXT,
+    score          INTEGER,
+    notified       INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL,
     PRIMARY KEY (search_id, item_id)
 )
 """
+
+# Columns added after the initial schema. Applied on open() so existing
+# databases pick them up without a manual migration.
+_MIGRATIONS = [
+    ("hits", "buying_options", "TEXT"),
+]
 
 
 class Store:
@@ -42,8 +49,20 @@ class Store:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute(_CREATE_SEEN)
         await self._db.execute(_CREATE_HITS)
+        await self._apply_migrations()
         await self._db.commit()
         log.info("store opened", path=self._path)
+
+    async def _apply_migrations(self) -> None:
+        """Add columns introduced after a database was first created."""
+        for table, column, ddl in _MIGRATIONS:
+            async with self._db.execute(f"PRAGMA table_info({table})") as cursor:
+                existing = {row[1] async for row in cursor}
+            if column not in existing:
+                await self._db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"
+                )
+                log.info("store migrated", table=table, column=column)
 
     async def close(self) -> None:
         if self._db:
@@ -90,19 +109,41 @@ class Store:
         title: str,
         price: float,
         url: str,
+        buying_options: list[str] | None = None,
         verdict: str | None = None,
         score: int | None = None,
         notified: bool = False,
     ) -> None:
         """Write a full hit record to the hits table for audit / retrospective queries."""
         now = datetime.now(timezone.utc).isoformat()
+        options = ",".join(buying_options) if buying_options else None
         await self._db.execute(
             """
             INSERT OR REPLACE INTO hits
-              (search_id, item_id, title, price, url, verdict, score, notified, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (search_id, item_id, title, price, buying_options, url,
+               verdict, score, notified, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (search_id, item_id, title, price, url, verdict, score, int(notified), now),
+            (search_id, item_id, title, price, options, url,
+             verdict, score, int(notified), now),
+        )
+        await self._db.commit()
+
+    async def raise_auction_prices(
+        self, search_id: str, prices: list[tuple[str, float]]
+    ) -> None:
+        """
+        Bump the stored price of already-recorded auction hits when their
+        current bid has risen. Each entry is (item_id, current_bid_price);
+        only rows whose recorded price is lower are updated, so an unchanged
+        or lower bid is a no-op.
+        """
+        if not prices:
+            return
+        await self._db.executemany(
+            "UPDATE hits SET price = ? "
+            "WHERE search_id = ? AND item_id = ? AND price < ?",
+            [(price, search_id, item_id, price) for item_id, price in prices],
         )
         await self._db.commit()
 
@@ -111,8 +152,8 @@ class Store:
     ) -> list[dict]:
         """Most recent hits, newest first, optionally scoped to one search."""
         query = (
-            "SELECT search_id, item_id, title, price, url, verdict, score, "
-            "notified, created_at FROM hits"
+            "SELECT search_id, item_id, title, price, buying_options, url, "
+            "verdict, score, notified, created_at FROM hits"
         )
         params: list = []
         if search_id is not None:

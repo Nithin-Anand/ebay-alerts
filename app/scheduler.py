@@ -72,6 +72,13 @@ async def _tick(search: Search, deps: Deps, status: SearchStatus) -> None:
     item_ids = [listing.item_id for listing in listings]
     new_ids = await deps.store.filter_unseen(search.id, item_ids)
 
+    # Keep the stored price of previously-seen auctions in step with their
+    # live high bid, even when no new items showed up this poll.
+    auction_prices = [
+        (l.item_id, float(l.display_price)) for l in listings if l.is_auction
+    ]
+    await deps.store.raise_auction_prices(search.id, auction_prices)
+
     if not new_ids:
         log.debug("no new items", search_id=search.id, checked=len(listings))
         return
@@ -96,8 +103,9 @@ async def _tick(search: Search, deps: Deps, status: SearchStatus) -> None:
             search_id=search.id,
             item_id=listing.item_id,
             title=listing.title,
-            price=float(listing.price),
+            price=float(listing.display_price),
             url=listing.item_web_url,
+            buying_options=listing.buying_options,
             verdict=verdict.recommend if verdict else None,
             score=verdict.score if verdict else None,
             notified=notify,

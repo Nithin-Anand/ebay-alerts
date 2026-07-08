@@ -20,8 +20,11 @@ def _format_title(search: Search, listing: Listing, verdict: Verdict | None) -> 
 
 
 def _format_message(listing: Listing, verdict: Verdict | None) -> str:
+    price = f"£{listing.display_price}"
+    if listing.is_auction:
+        price += " (current bid)"
     lines: list[str] = [
-        f"£{listing.price} • {listing.condition or 'Condition unknown'}",
+        f"{price} • {listing.condition or 'Condition unknown'}",
     ]
 
     if listing.buying_options:

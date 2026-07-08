@@ -294,6 +294,7 @@ class Listing(BaseModel):
     item_id: str
     title: str
     price: Decimal
+    current_bid_price: Decimal | None = None  # only present for auction listings
     currency: str = "GBP"
     condition: str | None = None
     buying_options: list[str] = []
@@ -313,6 +314,26 @@ class Listing(BaseModel):
             urls.append(self.image_url)
         urls.extend(self.additional_image_urls)
         return urls
+
+    @property
+    def is_auction(self) -> bool:
+        return "AUCTION" in self.buying_options
+
+    @property
+    def has_best_offer(self) -> bool:
+        return "BEST_OFFER" in self.buying_options
+
+    @property
+    def display_price(self) -> Decimal:
+        """
+        Price to show and store for this listing. For auctions this is the
+        current bid price (falling back to the base price if eBay omits it,
+        e.g. an auction with no bids yet); for everything else it's the
+        fixed / Buy It Now price.
+        """
+        if self.is_auction and self.current_bid_price is not None:
+            return self.current_bid_price
+        return self.price
 
 
 class Verdict(BaseModel):

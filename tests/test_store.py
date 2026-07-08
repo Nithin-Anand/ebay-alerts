@@ -84,3 +84,45 @@ async def test_record_hit_without_verdict(store):
     ) as cursor:
         row = await cursor.fetchone()
     assert row == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_record_hit_stores_buying_options(store):
+    await store.record_hit(
+        search_id="search1",
+        item_id="item-3",
+        title="Auction Item",
+        price=12.50,
+        url="https://www.ebay.co.uk/itm/3",
+        buying_options=["AUCTION", "BEST_OFFER"],
+    )
+    hits = await store.recent_hits("search1")
+    assert hits[0]["buying_options"] == "AUCTION,BEST_OFFER"
+
+
+@pytest.mark.asyncio
+async def test_raise_auction_prices_bumps_only_when_higher(store):
+    await store.record_hit(
+        search_id="search1",
+        item_id="auction-1",
+        title="Live Auction",
+        price=20.00,
+        url="https://www.ebay.co.uk/itm/a1",
+        buying_options=["AUCTION"],
+    )
+    # Higher bid raises the stored price
+    await store.raise_auction_prices("search1", [("auction-1", 25.00)])
+    hits = await store.recent_hits("search1")
+    assert hits[0]["price"] == 25.00
+
+    # A lower or equal bid is a no-op (bids never go down)
+    await store.raise_auction_prices("search1", [("auction-1", 22.00)])
+    hits = await store.recent_hits("search1")
+    assert hits[0]["price"] == 25.00
+
+
+@pytest.mark.asyncio
+async def test_raise_auction_prices_ignores_unknown_items(store):
+    # Updating an item that was never recorded must not create a row
+    await store.raise_auction_prices("search1", [("ghost", 99.00)])
+    assert await store.recent_hits("search1") == []
