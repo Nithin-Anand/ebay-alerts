@@ -5,13 +5,19 @@ services:
     env_file: .env
     environment:
       # Override OLLAMA_URL here if your Ollama runs as a separate Docker service.
-      # host.docker.internal resolves to the Docker host on Mac/Windows.
-      # On Linux, use the host's IP or add `extra_hosts: ["host.docker.internal:host-gateway"]`
+      # host.docker.internal resolves to the Docker host on Mac/Windows automatically;
+      # extra_hosts below makes it resolve on Linux too. This assumes Ollama's
+      # container publishes port 11434 to the host (e.g. `-p 11434:11434`).
       OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      # Required on Linux Docker hosts for host.docker.internal to resolve.
+      - "host.docker.internal:host-gateway"
     ports:
       # Web UI for monitoring and editing searches. No authentication —
-      # bind to 127.0.0.1 (as below) or a LAN-only interface, never the internet.
-      - "127.0.0.1:8787:8787"
+      # 0.0.0.0 makes it reachable from your LAN (and the internet if your
+      # firewall/router forwards this port, so don't forward it). If you
+      # only need access from the server itself, use 127.0.0.1:8787:8787.
+      - "0.0.0.0:8787:8787"
     volumes:
       # Read-write: the web UI persists search edits back to this file
       - ./searches.yaml:/app/searches.yaml
