@@ -52,7 +52,8 @@
     border-radius: 10px; padding: 1rem 1.1rem;
   }
   .card.paused { opacity: .6; }
-  .card h3 { margin: 0; font-size: 1.05rem; }
+  .card h3 { margin: 0; font-size: 1.05rem; cursor: pointer; }
+  .card h3:hover { color: var(--accent); }
   .card .head { display: flex; align-items: center; gap: .6rem; margin-bottom: .4rem; }
   .card .head .spacer { flex: 1; }
   .card .query { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; color: var(--text-dim); margin: .2rem 0 .6rem; }
@@ -67,7 +68,7 @@
 
   .details-toggle {
     background: none; border: none; color: var(--text-dim);
-    width: 1.2rem; padding: 0; font-size: .8rem; line-height: 1; cursor: pointer;
+    width: 1.6rem; padding: 0; font-size: 1.15rem; line-height: 1; cursor: pointer;
   }
   .details-toggle:hover { color: var(--accent); border-color: transparent; }
   .chips-row { margin: .15rem 0 .1rem; }
@@ -422,10 +423,10 @@ function renderCards() {
     return `
     <div class="card ${s.enabled ? "" : "paused"}">
       <div class="head">
-        <button class="details-toggle" onclick="toggleDetails('${esc(s.id)}')" title="${open ? "Hide" : "Show"} details">${open ? "▾" : "▸"}</button>
-        <h3>${esc(s.name)}</h3>
+        <h3 onclick="toggleDetails('${esc(s.id)}')" title="${open ? "Hide" : "Show"} details">${esc(s.name)}</h3>
         <span class="spacer"></span>
         ${s.enabled ? "" : `<span class="chip warn">paused</span>`}
+        <button class="details-toggle" onclick="toggleDetails('${esc(s.id)}')" title="${open ? "Hide" : "Show"} details">${open ? "▾" : "▸"}</button>
       </div>
       <div class="query">${esc(s.query)}</div>
       <div class="statusline">${summary}</div>
