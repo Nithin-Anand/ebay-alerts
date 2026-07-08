@@ -65,6 +65,25 @@
   .chip.on { color: var(--green); border-color: var(--green); }
   .chip.warn { color: var(--amber); border-color: var(--amber); }
 
+  .details-toggle {
+    background: none; border: none; color: var(--text-dim);
+    width: 1.2rem; padding: 0; font-size: .8rem; line-height: 1; cursor: pointer;
+  }
+  .details-toggle:hover { color: var(--accent); border-color: transparent; }
+  .chips-row { margin: .15rem 0 .1rem; }
+
+  .menu { position: relative; margin-left: auto; }
+  .menu-items {
+    position: absolute; right: 0; top: calc(100% + 4px); z-index: 10;
+    display: flex; flex-direction: column; min-width: 7.5rem;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: .25rem;
+    box-shadow: 0 6px 18px rgba(0,0,0,.45);
+  }
+  .menu-items[hidden] { display: none; }
+  .menu-items button { background: none; border: none; text-align: left; border-radius: 5px; }
+  .menu-items button:hover { background: var(--surface); }
+
   .statusline { font-size: .82rem; color: var(--text-dim); margin: .5rem 0; line-height: 1.6; }
   .statusline .err { color: var(--red); }
   .statusline b { color: var(--text); font-weight: 600; }
@@ -88,7 +107,11 @@
   .tag.auction { color: var(--amber); border-color: var(--amber); }
   .tag.bin { color: var(--accent); border-color: var(--accent); }
   .tag.offer { color: var(--green); border-color: var(--green); }
-  button.rerun { font-size: .75rem; padding: .05rem .4rem; margin-left: .4rem; line-height: 1.2; }
+  button.rerun { font-size: .75rem; padding: .05rem .4rem; margin-left: .4rem; line-height: 1.2; visibility: hidden; }
+  tr:hover button.rerun, button.rerun:focus, button.rerun:disabled { visibility: visible; }
+  .dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; vertical-align: middle; }
+  .dot.on { background: var(--green); }
+  .dot.off { background: transparent; border: 1px solid var(--border); }
   .muted { color: var(--text-dim); }
   .empty { color: var(--text-dim); padding: 2rem 0; text-align: center; }
 
@@ -313,6 +336,31 @@ async function api(method, path, body) {
 
 let searches = [];
 
+// Per-card: which searches show their detail row (filter chips + full
+// poll stats). Collapsed by default to keep the card grid quiet; the
+// choice is remembered across reloads.
+const DETAILS_KEY = "expandedCards";
+const expandedCards = new Set(JSON.parse(localStorage.getItem(DETAILS_KEY) || "[]"));
+
+function toggleDetails(id) {
+  expandedCards.has(id) ? expandedCards.delete(id) : expandedCards.add(id);
+  localStorage.setItem(DETAILS_KEY, JSON.stringify([...expandedCards]));
+  renderCards();
+}
+
+// ⋯ dropdown holding the destructive / infrequent card actions.
+function toggleMenu(event) {
+  event.stopPropagation();
+  const menu = event.currentTarget.nextElementSibling;
+  const wasHidden = menu.hidden;
+  closeMenus();
+  menu.hidden = !wasHidden;
+}
+function closeMenus() {
+  document.querySelectorAll(".menu-items").forEach(m => { m.hidden = true; });
+}
+document.addEventListener("click", closeMenus);
+
 async function loadSearches() {
   const data = await api("GET", "/api/searches");
   searches = data.searches;
@@ -322,8 +370,13 @@ async function loadSearches() {
 
 function chips(s) {
   const f = s.filters, out = [];
-  out.push(`<span class="chip">every ${s.poll_interval_seconds}s</span>`);
-  out.push(`<span class="chip">${esc(s.sort.replaceAll("_", " "))}</span>`);
+  out.push(`<span class="chip">${esc(s.id)}</span>`);
+  // Only chips that differ from the defaults — restating "every 600s ·
+  // newly listed" on every card is noise; the edit form shows the rest.
+  if (s.poll_interval_seconds !== 600)
+    out.push(`<span class="chip">every ${s.poll_interval_seconds}s</span>`);
+  if (s.sort !== "newly_listed")
+    out.push(`<span class="chip">${esc(s.sort.replaceAll("_", " "))}</span>`);
   if (f.price_min != null || f.price_max != null)
     out.push(`<span class="chip">£${f.price_min ?? "0"}–£${f.price_max ?? "∞"}</span>`);
   if (f.condition?.length)
@@ -348,29 +401,45 @@ function renderCards() {
 
   $("cards").innerHTML = searches.map(s => {
     const st = s.status, hits = s.hits;
-    const statusline = s.enabled ? `
-      Last poll <b>${rel(st.last_poll_at)}</b> · next <b>${rel(st.next_poll_at)}</b> ·
-      ${st.last_result_count ?? "—"} results · <b>${st.new_items_total}</b> new this session<br>
-      Hits: <b>${hits.total}</b> total, <b>${hits.notified}</b> notified · last ${rel(hits.last_hit_at)}
-      ${st.last_error ? `<br><span class="err">Error: ${esc(st.last_error)}</span>` : ""}`
-      : `Paused · Hits: <b>${hits.total}</b> total, <b>${hits.notified}</b> notified`;
+    const open = expandedCards.has(s.id);
+
+    // Always-visible one-liner: what happens next and how it's doing.
+    // Errors also stay visible — they shouldn't hide behind the toggle.
+    const hitsSummary = `<b>${hits.total}</b> hit${hits.total === 1 ? "" : "s"}, <b>${hits.notified}</b> notified`;
+    const summary = (s.enabled
+      ? `Next poll <b>${rel(st.next_poll_at)}</b> · ${hitsSummary}`
+      : `Paused · ${hitsSummary}`)
+      + (st.last_error ? `<br><span class="err">Error: ${esc(st.last_error)}</span>` : "");
+
+    // Everything else (filter chips + full poll stats) sits behind the chevron.
+    const detail = `
+      <div class="chips-row">${chips(s)}</div>
+      <div class="statusline">
+        Last poll <b>${rel(st.last_poll_at)}</b> · ${st.last_result_count ?? "—"} results ·
+        <b>${st.new_items_total}</b> new this session · last hit ${rel(hits.last_hit_at)}
+      </div>`;
 
     return `
     <div class="card ${s.enabled ? "" : "paused"}">
       <div class="head">
+        <button class="details-toggle" onclick="toggleDetails('${esc(s.id)}')" title="${open ? "Hide" : "Show"} details">${open ? "▾" : "▸"}</button>
         <h3>${esc(s.name)}</h3>
-        <span class="chip">${esc(s.id)}</span>
         <span class="spacer"></span>
         ${s.enabled ? "" : `<span class="chip warn">paused</span>`}
       </div>
       <div class="query">${esc(s.query)}</div>
-      <div>${chips(s)}</div>
-      <div class="statusline">${statusline}</div>
+      <div class="statusline">${summary}</div>
+      ${open ? detail : ""}
       <div class="actions">
         <button onclick="pollNow('${esc(s.id)}')" ${s.enabled ? "" : "disabled"}>Poll now</button>
         <button onclick="togglePause('${esc(s.id)}')">${s.enabled ? "Pause" : "Resume"}</button>
-        <button onclick="openForm('${esc(s.id)}')">Edit</button>
-        <button class="danger" onclick="deleteSearch('${esc(s.id)}')">Delete</button>
+        <div class="menu">
+          <button onclick="toggleMenu(event)" title="More actions">⋯</button>
+          <div class="menu-items" hidden>
+            <button onclick="openForm('${esc(s.id)}')">Edit</button>
+            <button class="danger" onclick="deleteSearch('${esc(s.id)}')">Delete</button>
+          </div>
+        </div>
       </div>
     </div>`;
   }).join("");
@@ -415,11 +484,12 @@ async function loadHits() {
     return;
   }
   const names = Object.fromEntries(searches.map(s => [s.id, s.name]));
+  const showSearch = !sid; // scoped to one search → the column is redundant
   $("hits").innerHTML = `
     <table>
       <tr>
         <th style="width:1.4rem"><input type="checkbox" onclick="toggleAllHits(this)" title="Select all"></th>
-        <th>When</th><th>Search</th><th>Item</th><th>Type</th><th>Price</th><th>Verdict</th><th>Notified</th>
+        <th>When</th>${showSearch ? "<th>Search</th>" : ""}<th>Item</th><th>Type</th><th>Price</th><th>Verdict</th><th>Notified</th>
       </tr>
       ${data.hits.map(h => {
         const opts = (h.buying_options ?? "").split(",").filter(Boolean);
@@ -430,7 +500,7 @@ async function loadHits() {
       <tr>
         <td><input type="checkbox" class="hit-check" data-sid="${esc(h.search_id)}" data-iid="${esc(h.item_id)}" onchange="updateHitControls()"></td>
         <td class="muted" title="${esc(h.created_at)}">${rel(h.created_at)}</td>
-        <td>${esc(names[h.search_id] ?? h.search_id)}</td>
+        ${showSearch ? `<td>${esc(names[h.search_id] ?? h.search_id)}</td>` : ""}
         <td><a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.title)}</a></td>
         <td>${purchaseTypes(opts)}</td>
         <td>£${Number(h.price).toFixed(2)}${isAuction ? ` <span class="muted">bid</span>` : ""}</td>
@@ -438,7 +508,7 @@ async function loadHits() {
           ${h.verdict ? `<span class="badge ${esc(h.verdict)}">${esc(h.verdict)} ${h.score}/10</span>` : `<span class="muted">—</span>`}
           ${canRerun ? `<button class="rerun" title="Re-run LLM analysis" data-sid="${esc(h.search_id)}" data-iid="${esc(h.item_id)}" onclick="rerunHit(this)">↻</button>` : ""}
         </td>
-        <td>${h.notified ? "✓" : `<span class="muted">✕</span>`}</td>
+        <td><span class="dot ${h.notified ? "on" : "off"}" title="${h.notified ? "Notified" : "Not notified"}"></span></td>
       </tr>`;
       }).join("")}
     </table>`;
@@ -626,6 +696,8 @@ loadSearches();
 loadHits();
 setInterval(() => {
   if ($("modal").open) return;
+  // Don't re-render the cards out from under an open ⋯ menu
+  if (document.querySelector(".menu-items:not([hidden])")) return;
   loadSearches();
   // Don't wipe an in-progress row selection on the periodic refresh
   if (!document.querySelector(".hit-check:checked")) loadHits();
