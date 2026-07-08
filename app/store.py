@@ -147,6 +147,55 @@ class Store:
         )
         await self._db.commit()
 
+    async def delete_hits(self, keys: list[tuple[str, str]]) -> int:
+        """
+        Delete hit rows by (search_id, item_id) and return how many were
+        removed. Only touches the audit/display table — seen_items is left
+        intact, so a still-live deleted item is not re-notified.
+        """
+        if not keys:
+            return 0
+        cursor = await self._db.executemany(
+            "DELETE FROM hits WHERE search_id = ? AND item_id = ?", keys
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def get_hit(self, search_id: str, item_id: str) -> dict | None:
+        """Fetch a single hit row by its composite key, or None if absent."""
+        async with self._db.execute(
+            "SELECT search_id, item_id, title, price, buying_options, url, "
+            "verdict, score, notified, created_at FROM hits "
+            "WHERE search_id = ? AND item_id = ?",
+            (search_id, item_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            columns = [col[0] for col in cursor.description]
+            return dict(zip(columns, row))
+
+    async def update_verdict(
+        self,
+        *,
+        search_id: str,
+        item_id: str,
+        verdict: str | None,
+        score: int | None,
+        notified: bool,
+    ) -> bool:
+        """
+        Overwrite the LLM verdict/score (and notified flag) on an existing
+        hit, e.g. after re-running analysis. Returns True if a row matched.
+        """
+        cursor = await self._db.execute(
+            "UPDATE hits SET verdict = ?, score = ?, notified = ? "
+            "WHERE search_id = ? AND item_id = ?",
+            (verdict, score, int(notified), search_id, item_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
     async def recent_hits(
         self, search_id: str | None = None, limit: int = 100
     ) -> list[dict]:

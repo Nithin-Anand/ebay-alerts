@@ -1,4 +1,5 @@
 from decimal import Decimal
+from urllib.parse import quote
 
 import httpx
 import structlog
@@ -10,6 +11,13 @@ from .auth import EbayAuth
 log = structlog.get_logger()
 
 _BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+_ITEM_URL = "https://api.ebay.com/buy/browse/v1/item"
+
+_MARKETPLACE_HEADERS = {
+    "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
+    # Tells eBay the browsing context is a UK user
+    "X-EBAY-C-ENDUSERCTX": "contextualLocation=country%3DGB",
+}
 
 # Friendly sort names → Browse API sort param values.
 # best_match is the API default so we omit the param rather than sending a value.
@@ -146,12 +154,7 @@ class EbayClient:
         if filter_str:
             params["filter"] = filter_str
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
-            # Tells eBay the browsing context is a UK user
-            "X-EBAY-C-ENDUSERCTX": "contextualLocation=country%3DGB",
-        }
+        headers = {"Authorization": f"Bearer {token}", **_MARKETPLACE_HEADERS}
 
         log.debug("ebay search", search_id=s.id, query=s.query, filter=filter_str)
         resp = await self._http.get(_BROWSE_URL, params=params, headers=headers)
@@ -162,6 +165,41 @@ class EbayClient:
         listings = [_parse_listing(item) for item in items]
         log.debug("ebay results", search_id=s.id, found=len(listings))
         return listings
+
+    async def get_item(self, item_id: str) -> Listing | None:
+        """
+        Fetch a single item's current details by its eBay item id.
+
+        Returns None if the item no longer exists (404) — e.g. an ended or
+        removed listing. Used to re-run analysis on a previously seen item.
+        """
+        token = await self._auth.get_token()
+        try:
+            return await self._do_get_item(item_id, token)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                log.warning("ebay 401 — refreshing token", item_id=item_id)
+                token = await self._auth.refresh()
+                return await self._do_get_item(item_id, token)
+            raise
+
+    @retry(
+        retry=retry_if_exception(_is_retryable),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        reraise=True,
+    )
+    async def _do_get_item(self, item_id: str, token: str) -> Listing | None:
+        headers = {"Authorization": f"Bearer {token}", **_MARKETPLACE_HEADERS}
+        # The item id contains reserved characters (e.g. '|') so it must be
+        # fully percent-encoded into the path.
+        url = f"{_ITEM_URL}/{quote(item_id, safe='')}"
+        resp = await self._http.get(url, headers=headers)
+        if resp.status_code == 404:
+            log.info("ebay item gone", item_id=item_id)
+            return None
+        resp.raise_for_status()
+        return _parse_listing(resp.json())
 
     async def aclose(self) -> None:
         await self._http.aclose()

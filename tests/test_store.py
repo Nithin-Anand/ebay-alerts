@@ -126,3 +126,50 @@ async def test_raise_auction_prices_ignores_unknown_items(store):
     # Updating an item that was never recorded must not create a row
     await store.raise_auction_prices("search1", [("ghost", 99.00)])
     assert await store.recent_hits("search1") == []
+
+
+@pytest.mark.asyncio
+async def test_delete_hits_removes_selected_rows(store):
+    for iid in ("a", "b", "c"):
+        await store.record_hit(
+            search_id="search1", item_id=iid, title="t", price=1.0, url="u"
+        )
+    deleted = await store.delete_hits([("search1", "a"), ("search1", "c")])
+    assert deleted == 2
+    remaining = [h["item_id"] for h in await store.recent_hits("search1")]
+    assert remaining == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_delete_hits_empty_is_noop(store):
+    assert await store.delete_hits([]) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_hit_returns_row_or_none(store):
+    await store.record_hit(
+        search_id="s", item_id="i", title="t", price=3.0, url="u",
+        verdict="maybe", score=5,
+    )
+    hit = await store.get_hit("s", "i")
+    assert hit["verdict"] == "maybe" and hit["score"] == 5
+    assert await store.get_hit("s", "missing") is None
+
+
+@pytest.mark.asyncio
+async def test_update_verdict_overwrites(store):
+    await store.record_hit(
+        search_id="s", item_id="i", title="t", price=3.0, url="u",
+        verdict="maybe", score=5, notified=False,
+    )
+    updated = await store.update_verdict(
+        search_id="s", item_id="i", verdict="bid", score=9, notified=True,
+    )
+    assert updated is True
+    hit = await store.get_hit("s", "i")
+    assert (hit["verdict"], hit["score"], hit["notified"]) == ("bid", 9, 1)
+
+    # No matching row → False
+    assert await store.update_verdict(
+        search_id="s", item_id="ghost", verdict="bid", score=9, notified=True,
+    ) is False

@@ -88,6 +88,7 @@
   .tag.auction { color: var(--amber); border-color: var(--amber); }
   .tag.bin { color: var(--accent); border-color: var(--accent); }
   .tag.offer { color: var(--green); border-color: var(--green); }
+  button.rerun { font-size: .75rem; padding: .05rem .4rem; margin-left: .4rem; line-height: 1.2; }
   .muted { color: var(--text-dim); }
   .empty { color: var(--text-dim); padding: 2rem 0; text-align: center; }
 
@@ -132,6 +133,8 @@
   <h2>
     Recent hits
     <select id="hits-filter" onchange="loadHits()"><option value="">All searches</option></select>
+    <span style="flex:1"></span>
+    <button id="del-hits" class="danger" onclick="deleteSelectedHits()" disabled>Delete selected</button>
   </h2>
   <div id="hits"></div>
 </main>
@@ -408,27 +411,74 @@ async function loadHits() {
   const data = await api("GET", `/api/hits?limit=100${sid ? `&search_id=${encodeURIComponent(sid)}` : ""}`);
   if (!data.hits.length) {
     $("hits").innerHTML = `<div class="empty">No hits recorded yet.</div>`;
+    updateHitControls();
     return;
   }
   const names = Object.fromEntries(searches.map(s => [s.id, s.name]));
   $("hits").innerHTML = `
     <table>
-      <tr><th>When</th><th>Search</th><th>Item</th><th>Type</th><th>Price</th><th>Verdict</th><th>Notified</th></tr>
+      <tr>
+        <th style="width:1.4rem"><input type="checkbox" onclick="toggleAllHits(this)" title="Select all"></th>
+        <th>When</th><th>Search</th><th>Item</th><th>Type</th><th>Price</th><th>Verdict</th><th>Notified</th>
+      </tr>
       ${data.hits.map(h => {
         const opts = (h.buying_options ?? "").split(",").filter(Boolean);
         const isAuction = opts.includes("AUCTION");
+        const srch = searches.find(x => x.id === h.search_id);
+        const canRerun = !!(srch && srch.llm && srch.llm.enabled);
         return `
       <tr>
+        <td><input type="checkbox" class="hit-check" data-sid="${esc(h.search_id)}" data-iid="${esc(h.item_id)}" onchange="updateHitControls()"></td>
         <td class="muted" title="${esc(h.created_at)}">${rel(h.created_at)}</td>
         <td>${esc(names[h.search_id] ?? h.search_id)}</td>
         <td><a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.title)}</a></td>
         <td>${purchaseTypes(opts)}</td>
         <td>£${Number(h.price).toFixed(2)}${isAuction ? ` <span class="muted">bid</span>` : ""}</td>
-        <td>${h.verdict ? `<span class="badge ${esc(h.verdict)}">${esc(h.verdict)} ${h.score}/10</span>` : `<span class="muted">—</span>`}</td>
+        <td>
+          ${h.verdict ? `<span class="badge ${esc(h.verdict)}">${esc(h.verdict)} ${h.score}/10</span>` : `<span class="muted">—</span>`}
+          ${canRerun ? `<button class="rerun" title="Re-run LLM analysis" data-sid="${esc(h.search_id)}" data-iid="${esc(h.item_id)}" onclick="rerunHit(this)">↻</button>` : ""}
+        </td>
         <td>${h.notified ? "✓" : `<span class="muted">✕</span>`}</td>
       </tr>`;
       }).join("")}
     </table>`;
+  updateHitControls();
+}
+
+function toggleAllHits(master) {
+  document.querySelectorAll(".hit-check").forEach(cb => { cb.checked = master.checked; });
+  updateHitControls();
+}
+
+function updateHitControls() {
+  const n = document.querySelectorAll(".hit-check:checked").length;
+  const btn = $("del-hits");
+  btn.disabled = n === 0;
+  btn.textContent = n ? `Delete selected (${n})` : "Delete selected";
+}
+
+async function deleteSelectedHits() {
+  const items = [...document.querySelectorAll(".hit-check:checked")].map(cb => ({
+    search_id: cb.dataset.sid, item_id: cb.dataset.iid,
+  }));
+  if (!items.length) return;
+  if (!confirm(`Delete ${items.length} row${items.length === 1 ? "" : "s"} from the hits table? This does not affect eBay or notifications.`)) return;
+  await api("POST", "/api/hits/delete", { items });
+  await loadHits();
+}
+
+async function rerunHit(btn) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    await api("POST", "/api/hits/rerun", { search_id: btn.dataset.sid, item_id: btn.dataset.iid });
+    await loadHits();
+  } catch (err) {
+    alert("Re-run failed: " + err.message);
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
 }
 
 // Render the buying-option tags for a hit: Buy It Now / Auction / both,
@@ -575,7 +625,10 @@ async function submitForm(event) {
 loadSearches();
 loadHits();
 setInterval(() => {
-  if (!$("modal").open) { loadSearches(); loadHits(); }
+  if ($("modal").open) return;
+  loadSearches();
+  // Don't wipe an in-progress row selection on the periodic refresh
+  if (!document.querySelector(".hit-check:checked")) loadHits();
 }, 15000);
 </script>
 </body>

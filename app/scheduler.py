@@ -194,6 +194,58 @@ class SearchManager:
             raise ValueError(f"Search '{search_id}' is not running (disabled?)")
         self._wake[search_id].set()
 
+    async def rerun_analysis(self, search_id: str, item_id: str) -> dict:
+        """
+        Re-fetch a previously seen listing and run LLM analysis on it again,
+        overwriting the stored verdict. Useful when the first analysis failed
+        (e.g. Ollama was unreachable). Sends a notification only if the item
+        was not already notified and the fresh verdict now warrants one.
+
+        Raises KeyError if the search or hit is unknown, ValueError if the
+        search has no active LLM config or the listing is no longer on eBay.
+        """
+        search = self._searches.get(search_id)
+        if search is None:
+            raise KeyError(search_id)
+        if not (search.llm and search.llm.enabled):
+            raise ValueError("LLM analysis is not enabled for this search")
+
+        hit = await self._deps.store.get_hit(search_id, item_id)
+        if hit is None:
+            raise KeyError(item_id)
+
+        listing = await self._deps.ebay.get_item(item_id)
+        if listing is None:
+            raise ValueError("Listing is no longer available on eBay")
+
+        verdict = await self._deps.ollama.analyse(listing, search.llm)
+
+        already_notified = bool(hit["notified"])
+        notify = not already_notified and _should_notify(search, verdict)
+        if notify:
+            await self._deps.notifier.send(search, listing, verdict)
+
+        await self._deps.store.update_verdict(
+            search_id=search_id,
+            item_id=item_id,
+            verdict=verdict.recommend,
+            score=verdict.score,
+            notified=already_notified or notify,
+        )
+        log.info(
+            "reanalysed hit",
+            search_id=search_id,
+            item_id=item_id,
+            recommend=verdict.recommend,
+            score=verdict.score,
+            notified=already_notified or notify,
+        )
+        return {
+            "verdict": verdict.recommend,
+            "score": verdict.score,
+            "notified": already_notified or notify,
+        }
+
     # ── Internals ──────────────────────────────────────────────────────────
 
     def _persist(self) -> None:

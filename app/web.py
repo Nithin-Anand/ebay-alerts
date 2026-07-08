@@ -13,6 +13,8 @@ Endpoints:
     DELETE /api/searches/{id}     Delete a search (hits/seen history is kept)
     POST   /api/searches/{id}/poll  Trigger an immediate poll
     GET    /api/hits              Recent hits (?search_id=...&limit=...)
+    POST   /api/hits/delete      Delete selected hit rows (body: {items: [{search_id, item_id}]})
+    POST   /api/hits/rerun       Re-run LLM analysis for one hit (body: {search_id, item_id})
 """
 
 from pathlib import Path
@@ -20,6 +22,7 @@ from pathlib import Path
 import structlog
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from .models import Search
 from .scheduler import SearchManager
@@ -28,6 +31,17 @@ from .store import Store
 log = structlog.get_logger()
 
 _STATIC_DIR = Path(__file__).parent / "static"
+
+
+class HitRef(BaseModel):
+    """Identifies a single hit row (the hits table's composite primary key)."""
+
+    search_id: str
+    item_id: str
+
+
+class DeleteHitsBody(BaseModel):
+    items: list[HitRef]
 
 
 def create_app(manager: SearchManager, store: Store) -> FastAPI:
@@ -98,5 +112,23 @@ def create_app(manager: SearchManager, store: Store) -> FastAPI:
         limit: int = Query(default=100, ge=1, le=500),
     ) -> dict:
         return {"hits": await store.recent_hits(search_id, limit)}
+
+    @app.post("/api/hits/delete")
+    async def delete_hits(body: DeleteHitsBody) -> dict:
+        deleted = await store.delete_hits(
+            [(h.search_id, h.item_id) for h in body.items]
+        )
+        return {"deleted": deleted}
+
+    @app.post("/api/hits/rerun")
+    async def rerun_hit(ref: HitRef) -> dict:
+        try:
+            return await manager.rerun_analysis(ref.search_id, ref.item_id)
+        except KeyError:
+            raise HTTPException(
+                status_code=404, detail="Unknown hit, or its search was deleted"
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     return app
