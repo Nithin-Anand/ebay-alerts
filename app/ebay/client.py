@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 from urllib.parse import quote
 
@@ -12,6 +13,9 @@ log = structlog.get_logger()
 
 _BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 _ITEM_URL = "https://api.ebay.com/buy/browse/v1/item"
+
+# getItems accepts at most 20 item ids per call.
+_MAX_GET_ITEMS = 20
 
 _MARKETPLACE_HEADERS = {
     "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
@@ -118,6 +122,22 @@ def _is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError))
 
 
+def _has_ended(listing: Listing) -> bool:
+    """
+    True if an auction's end time is in the past. getItems can keep returning
+    an ended auction for a while after it closes, so a past end_time means the
+    listing is no longer active even though eBay still serves it.
+    """
+    if not listing.end_time:
+        return False
+    try:
+        # eBay uses a trailing 'Z'; fromisoformat only accepts an offset.
+        end = datetime.fromisoformat(listing.end_time.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return end <= datetime.now(timezone.utc)
+
+
 class EbayClient:
     def __init__(self, auth: EbayAuth) -> None:
         self._auth = auth
@@ -200,6 +220,64 @@ class EbayClient:
             return None
         resp.raise_for_status()
         return _parse_listing(resp.json())
+
+    async def get_items(self, item_ids: list[str]) -> dict[str, Listing | None]:
+        """
+        Verify a batch of item ids using the Browse API getItems method, which
+        returns up to 20 items per call. Returns every requested id mapped to
+        its live Listing, or None if the item is gone (removed / not found) or
+        has already ended — the signal used to archive stale hits.
+        """
+        result: dict[str, Listing | None] = {}
+        for start in range(0, len(item_ids), _MAX_GET_ITEMS):
+            chunk = item_ids[start : start + _MAX_GET_ITEMS]
+            result.update(await self._get_items_chunk(chunk))
+        return result
+
+    async def _get_items_chunk(self, item_ids: list[str]) -> dict[str, Listing | None]:
+        token = await self._auth.get_token()
+        try:
+            return await self._do_get_items(item_ids, token)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                log.warning("ebay 401 — refreshing token", count=len(item_ids))
+                token = await self._auth.refresh()
+                return await self._do_get_items(item_ids, token)
+            raise
+
+    @retry(
+        retry=retry_if_exception(_is_retryable),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        reraise=True,
+    )
+    async def _do_get_items(
+        self, item_ids: list[str], token: str
+    ) -> dict[str, Listing | None]:
+        headers = {"Authorization": f"Bearer {token}", **_MARKETPLACE_HEADERS}
+        # Each id must be percent-encoded (they contain '|'), but the commas
+        # separating ids must stay literal — so build the query manually rather
+        # than let httpx encode a params dict.
+        joined = ",".join(quote(iid, safe="") for iid in item_ids)
+        resp = await self._http.get(
+            f"{_ITEM_URL}?item_ids={joined}", headers=headers
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Found items come back in `items`; ids that couldn't be resolved are
+        # returned as null entries there and echoed in `warnings`. We treat any
+        # requested id without a live listing as gone.
+        found: dict[str, Listing] = {}
+        for item in data.get("items") or []:
+            if item and item.get("itemId"):
+                found[item["itemId"]] = _parse_listing(item)
+
+        result: dict[str, Listing | None] = {}
+        for iid in item_ids:
+            listing = found.get(iid)
+            result[iid] = None if listing is None or _has_ended(listing) else listing
+        return result
 
     async def aclose(self) -> None:
         await self._http.aclose()

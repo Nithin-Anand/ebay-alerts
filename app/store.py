@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS hits (
 # databases pick them up without a manual migration.
 _MIGRATIONS = [
     ("hits", "buying_options", "TEXT"),
+    # Liveness tracking: when a hit was last verified against eBay, and when it
+    # was archived after being confirmed no longer active (NULL = still live).
+    ("hits", "last_checked_at", "TEXT"),
+    ("hits", "archived_at", "TEXT"),
 ]
 
 
@@ -117,15 +121,17 @@ class Store:
         """Write a full hit record to the hits table for audit / retrospective queries."""
         now = datetime.now(timezone.utc).isoformat()
         options = ",".join(buying_options) if buying_options else None
+        # A just-recorded hit was live moments ago, so seed last_checked_at to
+        # keep the pruner from immediately re-verifying it.
         await self._db.execute(
             """
             INSERT OR REPLACE INTO hits
               (search_id, item_id, title, price, buying_options, url,
-               verdict, score, notified, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               verdict, score, notified, created_at, last_checked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (search_id, item_id, title, price, options, url,
-             verdict, score, int(notified), now),
+             verdict, score, int(notified), now, now),
         )
         await self._db.commit()
 
@@ -157,6 +163,65 @@ class Store:
             return 0
         cursor = await self._db.executemany(
             "DELETE FROM hits WHERE search_id = ? AND item_id = ?", keys
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def hits_to_check(self, limit: int) -> list[tuple[str, str]]:
+        """
+        Return up to `limit` non-archived hit keys, least-recently-verified
+        first (never-checked rows come first). Drives the pruner's round-robin
+        so a large table is swept over several cycles rather than all at once.
+        """
+        async with self._db.execute(
+            "SELECT search_id, item_id FROM hits "
+            "WHERE archived_at IS NULL "
+            # `last_checked_at IS NOT NULL` is 0 for NULLs, so they sort first.
+            "ORDER BY last_checked_at IS NOT NULL, last_checked_at ASC "
+            "LIMIT ?",
+            (limit,),
+        ) as cursor:
+            return [(row[0], row[1]) async for row in cursor]
+
+    async def mark_checked(
+        self, keys: list[tuple[str, str]], ts: str | None = None
+    ) -> None:
+        """Record that these hits were verified live at `ts` (default now)."""
+        if not keys:
+            return
+        ts = ts or datetime.now(timezone.utc).isoformat()
+        await self._db.executemany(
+            "UPDATE hits SET last_checked_at = ? WHERE search_id = ? AND item_id = ?",
+            [(ts, sid, iid) for sid, iid in keys],
+        )
+        await self._db.commit()
+
+    async def archive_hits(
+        self, keys: list[tuple[str, str]], ts: str | None = None
+    ) -> int:
+        """
+        Flag hits as archived (no longer active on eBay), keeping the row for
+        history. Only touches currently-active rows; returns how many changed.
+        """
+        if not keys:
+            return 0
+        ts = ts or datetime.now(timezone.utc).isoformat()
+        cursor = await self._db.executemany(
+            "UPDATE hits SET archived_at = ?, last_checked_at = ? "
+            "WHERE search_id = ? AND item_id = ? AND archived_at IS NULL",
+            [(ts, ts, sid, iid) for sid, iid in keys],
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def unarchive_hits(self, keys: list[tuple[str, str]]) -> int:
+        """Clear the archived flag, e.g. when a listing reappears in results."""
+        if not keys:
+            return 0
+        cursor = await self._db.executemany(
+            "UPDATE hits SET archived_at = NULL "
+            "WHERE search_id = ? AND item_id = ? AND archived_at IS NOT NULL",
+            keys,
         )
         await self._db.commit()
         return cursor.rowcount
@@ -197,17 +262,30 @@ class Store:
         return cursor.rowcount > 0
 
     async def recent_hits(
-        self, search_id: str | None = None, limit: int = 100
+        self,
+        search_id: str | None = None,
+        limit: int = 100,
+        archived: bool | None = None,
     ) -> list[dict]:
-        """Most recent hits, newest first, optionally scoped to one search."""
+        """
+        Most recent hits, newest first, optionally scoped to one search.
+        `archived`: None = all, False = only active, True = only archived.
+        """
         query = (
             "SELECT search_id, item_id, title, price, buying_options, url, "
-            "verdict, score, notified, created_at FROM hits"
+            "verdict, score, notified, created_at, archived_at FROM hits"
         )
+        conditions: list[str] = []
         params: list = []
         if search_id is not None:
-            query += " WHERE search_id = ?"
+            conditions.append("search_id = ?")
             params.append(search_id)
+        if archived is True:
+            conditions.append("archived_at IS NOT NULL")
+        elif archived is False:
+            conditions.append("archived_at IS NULL")
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
 

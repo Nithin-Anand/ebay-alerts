@@ -157,6 +157,56 @@ async def test_get_hit_returns_row_or_none(store):
 
 
 @pytest.mark.asyncio
+async def test_archive_hits_and_recent_hits_filter(store):
+    for iid in ("a", "b"):
+        await store.record_hit(
+            search_id="s", item_id=iid, title="t", price=1.0, url="u"
+        )
+    assert await store.archive_hits([("s", "a")]) == 1
+
+    active = [h["item_id"] for h in await store.recent_hits("s", archived=False)]
+    assert active == ["b"]
+    archived = [h["item_id"] for h in await store.recent_hits("s", archived=True)]
+    assert archived == ["a"]
+    both = {h["item_id"] for h in await store.recent_hits("s")}
+    assert both == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_archive_hits_is_idempotent(store):
+    await store.record_hit(search_id="s", item_id="a", title="t", price=1.0, url="u")
+    assert await store.archive_hits([("s", "a")]) == 1
+    # Already archived → no further change reported
+    assert await store.archive_hits([("s", "a")]) == 0
+
+
+@pytest.mark.asyncio
+async def test_unarchive_hits_restores_to_active(store):
+    await store.record_hit(search_id="s", item_id="a", title="t", price=1.0, url="u")
+    await store.archive_hits([("s", "a")])
+    assert await store.unarchive_hits([("s", "a")]) == 1
+    active = [h["item_id"] for h in await store.recent_hits("s", archived=False)]
+    assert active == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_hits_to_check_excludes_archived_and_orders_nulls_first(store):
+    for iid in ("a", "b", "c"):
+        await store.record_hit(
+            search_id="s", item_id=iid, title="t", price=1.0, url="u"
+        )
+    await store.archive_hits([("s", "b")])
+    await store.mark_checked([("s", "c")], ts="2030-01-01T00:00:00+00:00")
+    # Simulate a legacy row that predates last_checked_at tracking
+    await store._db.execute("UPDATE hits SET last_checked_at = NULL WHERE item_id = 'a'")
+    await store._db.commit()
+
+    ids = [iid for _, iid in await store.hits_to_check(10)]
+    assert "b" not in ids            # archived rows are never re-checked
+    assert ids == ["a", "c"]         # never-checked first, then oldest-checked
+
+
+@pytest.mark.asyncio
 async def test_update_verdict_overwrites(store):
     await store.record_hit(
         search_id="s", item_id="i", title="t", price=3.0, url="u",

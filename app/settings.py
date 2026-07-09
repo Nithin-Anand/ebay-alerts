@@ -30,4 +30,11 @@ class Settings(BaseSettings):
     searches_file: str = "/app/searches.yaml"
     data_dir: str = "/data"
 
+    # Auto-archiving of listings that are no longer active on eBay.
+    # Each cycle verifies up to prune_batch_size least-recently-checked hits
+    # (batched 20 per API call) and archives the ended/removed ones.
+    prune_enabled: bool = True
+    prune_interval_seconds: int = 3600
+    prune_batch_size: int = 200
+
     log_level: str = "INFO"

@@ -12,8 +12,10 @@ Endpoints:
     PUT    /api/searches/{id}     Update a search (body: Search; id must match)
     DELETE /api/searches/{id}     Delete a search (hits/seen history is kept)
     POST   /api/searches/{id}/poll  Trigger an immediate poll
-    GET    /api/hits              Recent hits (?search_id=...&limit=...)
+    GET    /api/hits              Recent hits (?search_id=...&limit=...&archived=...)
     POST   /api/hits/delete      Delete selected hit rows (body: {items: [{search_id, item_id}]})
+    POST   /api/hits/prune       Verify hits against eBay, archiving ended/removed ones
+    POST   /api/hits/unarchive   Restore archived hits to active (body: {items: [{search_id, item_id}]})
     POST   /api/hits/rerun       Re-run LLM analysis for one hit (body: {search_id, item_id})
 """
 
@@ -110,8 +112,9 @@ def create_app(manager: SearchManager, store: Store) -> FastAPI:
     async def list_hits(
         search_id: str | None = None,
         limit: int = Query(default=100, ge=1, le=500),
+        archived: bool | None = None,
     ) -> dict:
-        return {"hits": await store.recent_hits(search_id, limit)}
+        return {"hits": await store.recent_hits(search_id, limit, archived)}
 
     @app.post("/api/hits/delete")
     async def delete_hits(body: DeleteHitsBody) -> dict:
@@ -119,6 +122,17 @@ def create_app(manager: SearchManager, store: Store) -> FastAPI:
             [(h.search_id, h.item_id) for h in body.items]
         )
         return {"deleted": deleted}
+
+    @app.post("/api/hits/prune")
+    async def prune_hits() -> dict:
+        return {"archived": await manager.prune_now()}
+
+    @app.post("/api/hits/unarchive")
+    async def unarchive_hits(body: DeleteHitsBody) -> dict:
+        restored = await store.unarchive_hits(
+            [(h.search_id, h.item_id) for h in body.items]
+        )
+        return {"unarchived": restored}
 
     @app.post("/api/hits/rerun")
     async def rerun_hit(ref: HitRef) -> dict:

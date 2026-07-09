@@ -18,12 +18,16 @@ class StubEbay:
     def __init__(self):
         self.listings = []
         self.item = None  # returned by get_item (re-run path)
+        self.items = {}   # item_id -> Listing | None, for get_items (prune path)
 
     async def search(self, s):
         return self.listings
 
     async def get_item(self, item_id):
         return self.item
+
+    async def get_items(self, item_ids):
+        return {iid: self.items.get(iid) for iid in item_ids}
 
 
 class StubNotifier:
@@ -211,6 +215,104 @@ async def test_delete_hits_endpoint(env):
     assert resp.status_code == 200
     assert resp.json()["deleted"] == 1
     assert (await client.get("/api/hits")).json()["hits"] == []
+
+
+# ── Prune / archive inactive listings ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_prune_archives_ended_listings(env):
+    from decimal import Decimal
+    from app.models import Listing
+
+    client, manager, deps, _ = env
+    live = Listing(
+        item_id="live-1", title="Live", price=Decimal("30.00"),
+        item_web_url="https://www.ebay.co.uk/itm/live",
+    )
+    ended = Listing(
+        item_id="ended-1", title="Ended", price=Decimal("40.00"),
+        item_web_url="https://www.ebay.co.uk/itm/ended",
+    )
+    deps.ebay.listings = [live, ended]
+    await client.post("/api/searches", json=SEARCH_BODY)
+    await asyncio.sleep(0.1)  # first tick records both hits
+
+    # Both start out active
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert {h["item_id"] for h in active} == {"live-1", "ended-1"}
+
+    # eBay now reports ended-1 as gone; ended-1 also drops out of search results
+    deps.ebay.listings = [live]
+    deps.ebay.items = {"live-1": live, "ended-1": None}
+
+    resp = await client.post("/api/hits/prune")
+    assert resp.status_code == 200
+    assert resp.json()["archived"] == 1
+
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert [h["item_id"] for h in active] == ["live-1"]
+    archived = (await client.get("/api/hits", params={"archived": "true"})).json()["hits"]
+    assert [h["item_id"] for h in archived] == ["ended-1"]
+
+
+@pytest.mark.asyncio
+async def test_prune_reappearing_listing_is_revived(env):
+    from decimal import Decimal
+    from app.models import Listing
+
+    client, manager, deps, _ = env
+    item = Listing(
+        item_id="flaky-1", title="Flaky", price=Decimal("30.00"),
+        item_web_url="https://www.ebay.co.uk/itm/flaky",
+    )
+    deps.ebay.listings = [item]
+    await client.post("/api/searches", json=SEARCH_BODY)
+    await asyncio.sleep(0.1)
+
+    # A transient miss archives it...
+    deps.ebay.items = {"flaky-1": None}
+    assert (await client.post("/api/hits/prune")).json()["archived"] == 1
+    assert [h["item_id"] for h in
+            (await client.get("/api/hits", params={"archived": "true"})).json()["hits"]] == ["flaky-1"]
+
+    # ...but it reappears in the next poll and is moved back to active
+    await client.post("/api/searches/pi-4/poll")
+    await asyncio.sleep(0.1)
+    assert (await client.get("/api/hits", params={"archived": "true"})).json()["hits"] == []
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert [h["item_id"] for h in active] == ["flaky-1"]
+
+
+@pytest.mark.asyncio
+async def test_unarchive_endpoint_restores_hit(env):
+    from decimal import Decimal
+    from app.models import Listing
+
+    client, manager, deps, _ = env
+    item = Listing(
+        item_id="item-1", title="X", price=Decimal("20.00"),
+        item_web_url="https://www.ebay.co.uk/itm/1",
+    )
+    deps.ebay.listings = [item]
+    await client.post("/api/searches", json=SEARCH_BODY)
+    await asyncio.sleep(0.1)
+
+    # Archive it (eBay reports it gone; it also leaves search results)
+    deps.ebay.listings = []
+    deps.ebay.items = {"item-1": None}
+    assert (await client.post("/api/hits/prune")).json()["archived"] == 1
+
+    # Manual restore moves it back to active
+    resp = await client.post(
+        "/api/hits/unarchive",
+        json={"items": [{"search_id": "pi-4", "item_id": "item-1"}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["unarchived"] == 1
+
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert [h["item_id"] for h in active] == ["item-1"]
+    assert (await client.get("/api/hits", params={"archived": "true"})).json()["hits"] == []
 
 
 # ── Re-run LLM analysis ────────────────────────────────────────────────────

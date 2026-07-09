@@ -79,6 +79,12 @@ async def _tick(search: Search, deps: Deps, status: SearchStatus) -> None:
     ]
     await deps.store.raise_auction_prices(search.id, auction_prices)
 
+    # Everything in the results is provably live: refresh their check time (so
+    # the pruner deprioritises them) and revive any that were wrongly archived.
+    present_keys = [(search.id, iid) for iid in item_ids]
+    await deps.store.mark_checked(present_keys)
+    await deps.store.unarchive_hits(present_keys)
+
     if not new_ids:
         log.debug("no new items", search_id=search.id, checked=len(listings))
         return
@@ -122,7 +128,16 @@ class SearchManager:
     the event loop — no locking needed as long as mutators are awaited.
     """
 
-    def __init__(self, searches: list[Search], deps: Deps, searches_file: str | Path):
+    def __init__(
+        self,
+        searches: list[Search],
+        deps: Deps,
+        searches_file: str | Path,
+        *,
+        prune_enabled: bool = True,
+        prune_interval_seconds: int = 3600,
+        prune_batch_size: int = 200,
+    ):
         self._searches: dict[str, Search] = {s.id: s for s in searches}
         self._deps = deps
         self._searches_file = searches_file
@@ -131,6 +146,10 @@ class SearchManager:
         self._status: dict[str, SearchStatus] = {
             s.id: SearchStatus() for s in searches
         }
+        self._prune_enabled = prune_enabled
+        self._prune_interval = prune_interval_seconds
+        self._prune_batch = prune_batch_size
+        self._prune_task: asyncio.Task | None = None
 
     # ── Read side ──────────────────────────────────────────────────────────
 
@@ -148,17 +167,24 @@ class SearchManager:
     def start_all(self) -> None:
         for search in self._searches.values():
             self._start_task(search)
+        if self._prune_enabled:
+            self._prune_task = asyncio.create_task(self._prune_loop(), name="prune")
         log.info(
             "scheduler started",
             search_count=len(self._searches),
             active=len(self._tasks),
+            pruning=self._prune_enabled,
         )
 
     async def shutdown(self) -> None:
-        for task in self._tasks.values():
+        tasks = list(self._tasks.values())
+        if self._prune_task:
+            tasks.append(self._prune_task)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        self._prune_task = None
 
     # ── Mutations (persist + reconcile task) ───────────────────────────────
 
@@ -246,7 +272,46 @@ class SearchManager:
             "notified": already_notified or notify,
         }
 
+    async def prune_now(self) -> int:
+        """Run one liveness sweep immediately and return how many were archived."""
+        return await self._prune_once()
+
     # ── Internals ──────────────────────────────────────────────────────────
+
+    async def _prune_loop(self) -> None:
+        log.info(
+            "prune loop started",
+            interval_s=self._prune_interval,
+            batch=self._prune_batch,
+        )
+        while True:
+            try:
+                await self._prune_once()
+            except Exception as exc:
+                log.error("prune failed", error=str(exc))
+            await asyncio.sleep(self._prune_interval)
+
+    async def _prune_once(self) -> int:
+        """
+        Verify the least-recently-checked hits against eBay and archive the ones
+        that are gone or ended. Live ones just have their check time refreshed.
+        """
+        keys = await self._deps.store.hits_to_check(self._prune_batch)
+        if not keys:
+            return 0
+
+        # The same item can be shared by two searches — verify each id once.
+        statuses = await self._deps.ebay.get_items(
+            list({iid for _, iid in keys})
+        )
+        gone = [(sid, iid) for sid, iid in keys if statuses.get(iid) is None]
+        alive = [(sid, iid) for sid, iid in keys if statuses.get(iid) is not None]
+
+        if alive:
+            await self._deps.store.mark_checked(alive)
+        archived = await self._deps.store.archive_hits(gone) if gone else 0
+        log.info("prune complete", checked=len(keys), archived=archived)
+        return archived
 
     def _persist(self) -> None:
         save_searches(self._searches_file, self.searches())

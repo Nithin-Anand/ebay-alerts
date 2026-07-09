@@ -79,7 +79,14 @@ async def main() -> None:
     notifier = PushoverNotifier(settings.pushover_token, settings.pushover_user)
 
     deps = Deps(ebay=ebay, store=store, notifier=notifier, ollama=ollama)
-    manager = SearchManager(searches, deps, settings.searches_file)
+    manager = SearchManager(
+        searches,
+        deps,
+        settings.searches_file,
+        prune_enabled=settings.prune_enabled,
+        prune_interval_seconds=settings.prune_interval_seconds,
+        prune_batch_size=settings.prune_batch_size,
+    )
 
     server = uvicorn.Server(
         uvicorn.Config(

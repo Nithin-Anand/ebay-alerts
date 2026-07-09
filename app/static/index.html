@@ -157,7 +157,13 @@
   <h2>
     Recent hits
     <select id="hits-filter" onchange="loadHits()"><option value="">All searches</option></select>
+    <select id="hits-view" onchange="loadHits()">
+      <option value="active">Active</option>
+      <option value="archived">Archived</option>
+    </select>
     <span style="flex:1"></span>
+    <button id="prune-hits" onclick="pruneHits(this)" title="Check listings against eBay and archive any that have ended or been removed">Check for ended</button>
+    <button id="restore-hits" onclick="unarchiveSelectedHits()" disabled hidden>Restore selected</button>
     <button id="del-hits" class="danger" onclick="deleteSelectedHits()" disabled>Delete selected</button>
   </h2>
   <div id="hits"></div>
@@ -478,9 +484,10 @@ function renderHitsFilter() {
 
 async function loadHits() {
   const sid = $("hits-filter").value;
-  const data = await api("GET", `/api/hits?limit=100${sid ? `&search_id=${encodeURIComponent(sid)}` : ""}`);
+  const archived = $("hits-view").value === "archived";
+  const data = await api("GET", `/api/hits?limit=100&archived=${archived}${sid ? `&search_id=${encodeURIComponent(sid)}` : ""}`);
   if (!data.hits.length) {
-    $("hits").innerHTML = `<div class="empty">No hits recorded yet.</div>`;
+    $("hits").innerHTML = `<div class="empty">${archived ? "No archived listings — ended items land here once verified." : "No hits recorded yet."}</div>`;
     updateHitControls();
     return;
   }
@@ -521,21 +528,54 @@ function toggleAllHits(master) {
   updateHitControls();
 }
 
+function selectedHits() {
+  return [...document.querySelectorAll(".hit-check:checked")].map(cb => ({
+    search_id: cb.dataset.sid, item_id: cb.dataset.iid,
+  }));
+}
+
 function updateHitControls() {
   const n = document.querySelectorAll(".hit-check:checked").length;
-  const btn = $("del-hits");
-  btn.disabled = n === 0;
-  btn.textContent = n ? `Delete selected (${n})` : "Delete selected";
+  const del = $("del-hits");
+  del.disabled = n === 0;
+  del.textContent = n ? `Delete selected (${n})` : "Delete selected";
+
+  // Restore is only meaningful while viewing the Archive.
+  const restore = $("restore-hits");
+  restore.hidden = $("hits-view").value !== "archived";
+  restore.disabled = n === 0;
+  restore.textContent = n ? `Restore selected (${n})` : "Restore selected";
 }
 
 async function deleteSelectedHits() {
-  const items = [...document.querySelectorAll(".hit-check:checked")].map(cb => ({
-    search_id: cb.dataset.sid, item_id: cb.dataset.iid,
-  }));
+  const items = selectedHits();
   if (!items.length) return;
   if (!confirm(`Delete ${items.length} row${items.length === 1 ? "" : "s"} from the hits table? This does not affect eBay or notifications.`)) return;
   await api("POST", "/api/hits/delete", { items });
   await loadHits();
+}
+
+async function unarchiveSelectedHits() {
+  const items = selectedHits();
+  if (!items.length) return;
+  await api("POST", "/api/hits/unarchive", { items });
+  await loadHits();
+}
+
+async function pruneHits(btn) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  try {
+    const { archived } = await api("POST", "/api/hits/prune");
+    await loadHits();
+    btn.textContent = archived ? `Archived ${archived}` : "None ended";
+    setTimeout(() => { btn.textContent = prev; btn.disabled = false; }, 2500);
+  } catch (err) {
+    alert("Check failed: " + err.message);
+    btn.textContent = prev;
+    btn.disabled = false;
+  }
 }
 
 async function rerunHit(btn) {
