@@ -136,20 +136,24 @@ class Store:
         await self._db.commit()
 
     async def raise_auction_prices(
-        self, search_id: str, prices: list[tuple[str, float]]
+        self, prices: list[tuple[str, str, float]]
     ) -> None:
         """
         Bump the stored price of already-recorded auction hits when their
-        current bid has risen. Each entry is (item_id, current_bid_price);
-        only rows whose recorded price is lower are updated, so an unchanged
-        or lower bid is a no-op.
+        current bid has risen. Each entry is (search_id, item_id,
+        current_bid_price); only rows whose recorded price is lower are
+        updated, so an unchanged or lower bid is a no-op.
+
+        Called both from the poll loop (for items still in search results) and
+        the pruner (for items that dropped out of results, e.g. because their
+        bid rose above the search's price_max but the auction is still live).
         """
         if not prices:
             return
         await self._db.executemany(
             "UPDATE hits SET price = ? "
             "WHERE search_id = ? AND item_id = ? AND price < ?",
-            [(price, search_id, item_id, price) for item_id, price in prices],
+            [(price, sid, iid, price) for sid, iid, price in prices],
         )
         await self._db.commit()
 

@@ -284,6 +284,40 @@ async def test_prune_reappearing_listing_is_revived(env):
 
 
 @pytest.mark.asyncio
+async def test_prune_refreshes_price_of_live_out_of_range_auction(env):
+    """An auction whose bid climbs past the search's price_max drops out of
+    search results but is still live on eBay — the pruner is the only path that
+    still sees it, so it must refresh the stored price from the live bid."""
+    from decimal import Decimal
+    from app.models import Listing
+
+    client, manager, deps, _ = env
+    auction = Listing(
+        item_id="auc-1", title="Auction", price=Decimal("30.00"),
+        current_bid_price=Decimal("30.00"), buying_options=["AUCTION"],
+        item_web_url="https://www.ebay.co.uk/itm/auc",
+    )
+    deps.ebay.listings = [auction]
+    await client.post("/api/searches", json=SEARCH_BODY)  # price_max = 80
+    await asyncio.sleep(0.1)  # first tick records the hit at £30
+
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert active[0]["price"] == 30.00
+
+    # Bid climbs past the £80 max: gone from search results, still live at £95.
+    raised = auction.model_copy(update={"current_bid_price": Decimal("95.00")})
+    deps.ebay.listings = []
+    deps.ebay.items = {"auc-1": raised}
+
+    resp = await client.post("/api/hits/prune")
+    assert resp.json()["archived"] == 0  # still live — not archived
+
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert active[0]["item_id"] == "auc-1"
+    assert active[0]["price"] == 95.00  # price refreshed by the pruner
+
+
+@pytest.mark.asyncio
 async def test_unarchive_endpoint_restores_hit(env):
     from decimal import Decimal
     from app.models import Listing

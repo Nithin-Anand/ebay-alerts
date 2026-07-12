@@ -75,9 +75,11 @@ async def _tick(search: Search, deps: Deps, status: SearchStatus) -> None:
     # Keep the stored price of previously-seen auctions in step with their
     # live high bid, even when no new items showed up this poll.
     auction_prices = [
-        (l.item_id, float(l.display_price)) for l in listings if l.is_auction
+        (search.id, l.item_id, float(l.display_price))
+        for l in listings
+        if l.is_auction
     ]
-    await deps.store.raise_auction_prices(search.id, auction_prices)
+    await deps.store.raise_auction_prices(auction_prices)
 
     # Everything in the results is provably live: refresh their check time (so
     # the pruner deprioritises them) and revive any that were wrongly archived.
@@ -309,6 +311,16 @@ class SearchManager:
 
         if alive:
             await self._deps.store.mark_checked(alive)
+            # The item is still live but may have dropped out of its search
+            # results (e.g. an auction bid climbed past the search's price_max).
+            # The pruner is the only place that still sees its price, so bump it
+            # here to keep the stored/displayed figure in step with the bid.
+            alive_prices = [
+                (sid, iid, float(statuses[iid].display_price))
+                for sid, iid in alive
+                if statuses[iid].is_auction
+            ]
+            await self._deps.store.raise_auction_prices(alive_prices)
         archived = await self._deps.store.archive_hits(gone) if gone else 0
         log.info("prune complete", checked=len(keys), archived=archived)
         return archived

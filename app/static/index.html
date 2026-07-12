@@ -110,6 +110,7 @@
   .tag.offer { color: var(--green); border-color: var(--green); }
   button.rerun { font-size: .75rem; padding: .05rem .4rem; margin-left: .4rem; line-height: 1.2; visibility: hidden; }
   tr:hover button.rerun, button.rerun:focus, button.rerun:disabled { visibility: visible; }
+  td.over-range { color: var(--red); font-weight: 600; }
   .dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; vertical-align: middle; }
   .dot.on { background: var(--green); }
   .dot.off { background: transparent; border: 1px solid var(--border); }
@@ -504,6 +505,10 @@ async function loadHits() {
         const isAuction = opts.includes("AUCTION");
         const srch = searches.find(x => x.id === h.search_id);
         const canRerun = !!(srch && srch.llm && srch.llm.enabled);
+        // Flag prices that have climbed past the search's max — usually an
+        // auction whose bid outgrew the range, so it no longer shows on eBay.
+        const priceMax = srch?.filters?.price_max;
+        const overRange = priceMax != null && Number(h.price) > Number(priceMax);
         return `
       <tr>
         <td><input type="checkbox" class="hit-check" data-sid="${esc(h.search_id)}" data-iid="${esc(h.item_id)}" onchange="updateHitControls()"></td>
@@ -511,7 +516,7 @@ async function loadHits() {
         ${showSearch ? `<td>${esc(names[h.search_id] ?? h.search_id)}</td>` : ""}
         <td><a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.title)}</a></td>
         <td>${purchaseTypes(opts)}</td>
-        <td>£${Number(h.price).toFixed(2)}${isAuction ? ` <span class="muted">bid</span>` : ""}</td>
+        <td class="${overRange ? "over-range" : ""}"${overRange ? ` title="Above the search's max of £${esc(priceMax)}"` : ""}>£${Number(h.price).toFixed(2)}${isAuction ? ` <span class="muted">bid</span>` : ""}</td>
         <td>
           ${h.verdict ? `<span class="badge ${esc(h.verdict)}">${esc(h.verdict)} ${h.score}/10</span>` : `<span class="muted">—</span>`}
           ${canRerun ? `<button class="rerun" title="Re-run LLM analysis" data-sid="${esc(h.search_id)}" data-iid="${esc(h.item_id)}" onclick="rerunHit(this)">↻</button>` : ""}

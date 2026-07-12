@@ -111,12 +111,12 @@ async def test_raise_auction_prices_bumps_only_when_higher(store):
         buying_options=["AUCTION"],
     )
     # Higher bid raises the stored price
-    await store.raise_auction_prices("search1", [("auction-1", 25.00)])
+    await store.raise_auction_prices([("search1", "auction-1", 25.00)])
     hits = await store.recent_hits("search1")
     assert hits[0]["price"] == 25.00
 
     # A lower or equal bid is a no-op (bids never go down)
-    await store.raise_auction_prices("search1", [("auction-1", 22.00)])
+    await store.raise_auction_prices([("search1", "auction-1", 22.00)])
     hits = await store.recent_hits("search1")
     assert hits[0]["price"] == 25.00
 
@@ -124,7 +124,7 @@ async def test_raise_auction_prices_bumps_only_when_higher(store):
 @pytest.mark.asyncio
 async def test_raise_auction_prices_ignores_unknown_items(store):
     # Updating an item that was never recorded must not create a row
-    await store.raise_auction_prices("search1", [("ghost", 99.00)])
+    await store.raise_auction_prices([("search1", "ghost", 99.00)])
     assert await store.recent_hits("search1") == []
 
 
