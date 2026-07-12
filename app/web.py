@@ -21,6 +21,7 @@ Endpoints:
 
 from pathlib import Path
 
+import httpx
 import structlog
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -125,7 +126,25 @@ def create_app(manager: SearchManager, store: Store) -> FastAPI:
 
     @app.post("/api/hits/prune")
     async def prune_hits() -> dict:
-        return {"archived": await manager.prune_now()}
+        try:
+            return {"archived": await manager.prune_now()}
+        except httpx.HTTPStatusError as exc:
+            # The liveness check calls the Browse API getItems method, which some
+            # keysets aren't authorised for (Buy API access) — surface that
+            # clearly instead of a bare 500 the way a raw exception would.
+            if exc.response.status_code == 403:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "eBay denied access to the item-detail API (getItems, HTTP "
+                        "403): this keyset isn't authorised for the Buy API, so "
+                        "ended-listing checks are unavailable. Auction prices are "
+                        "still kept current via the normal poll."
+                    ),
+                )
+            raise HTTPException(
+                status_code=502, detail=f"eBay returned HTTP {exc.response.status_code}"
+            )
 
     @app.post("/api/hits/unarchive")
     async def unarchive_hits(body: DeleteHitsBody) -> dict:

@@ -17,10 +17,17 @@ from app.web import create_app
 class StubEbay:
     def __init__(self):
         self.listings = []
+        self.over_listings = []  # returned for the above-ceiling refresh query
+        self.over_ceiling_calls = 0  # times the above-ceiling query was issued
         self.item = None  # returned by get_item (re-run path)
         self.items = {}   # item_id -> Listing | None, for get_items (prune path)
 
     async def search(self, s):
+        # The over-ceiling refresh re-queries with price_max dropped and
+        # price_min set to the old ceiling — serve it the out-of-range results.
+        if s.filters.price_max is None and s.filters.price_min is not None:
+            self.over_ceiling_calls += 1
+            return self.over_listings
         return self.listings
 
     async def get_item(self, item_id):
@@ -281,6 +288,121 @@ async def test_prune_reappearing_listing_is_revived(env):
     assert (await client.get("/api/hits", params={"archived": "true"})).json()["hits"] == []
     active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
     assert [h["item_id"] for h in active] == ["flaky-1"]
+
+
+@pytest.mark.asyncio
+async def test_over_ceiling_refresh_updates_out_of_range_auction(env):
+    """An auction whose bid climbs past price_max drops out of the capped
+    results; the above-ceiling re-query catches it and refreshes its price
+    (which the pruner/getItems path can't, e.g. when Buy API access is denied)."""
+    from decimal import Decimal
+    from app.models import Listing
+
+    client, manager, deps, _ = env
+    auction = Listing(
+        item_id="auc-1", title="Auction", price=Decimal("30.00"),
+        current_bid_price=Decimal("30.00"), buying_options=["AUCTION"],
+        item_web_url="https://www.ebay.co.uk/itm/auc",
+    )
+    deps.ebay.listings = [auction]
+    await client.post("/api/searches", json=SEARCH_BODY)  # price_max = 80
+    await asyncio.sleep(0.1)  # first tick records the hit at £30
+
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert active[0]["price"] == 30.00
+
+    # Bid climbs past £80: gone from the capped results, but the above-ceiling
+    # re-query still sees it live at £95.
+    raised = auction.model_copy(update={"current_bid_price": Decimal("95.00")})
+    deps.ebay.listings = []
+    deps.ebay.over_listings = [raised]
+    await client.post("/api/searches/pi-4/poll")
+    await asyncio.sleep(0.1)
+
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert active[0]["item_id"] == "auc-1"
+    assert active[0]["price"] == 95.00
+
+
+@pytest.mark.asyncio
+async def test_over_ceiling_refresh_skipped_when_nothing_missing(env):
+    """When every tracked auction is still in the capped results, the extra
+    above-ceiling query must not run — it would waste an eBay API call."""
+    from decimal import Decimal
+    from app.models import Listing
+
+    client, manager, deps, _ = env
+    auction = Listing(
+        item_id="auc-1", title="Auction", price=Decimal("30.00"),
+        current_bid_price=Decimal("30.00"), buying_options=["AUCTION"],
+        item_web_url="https://www.ebay.co.uk/itm/auc",
+    )
+    deps.ebay.listings = [auction]
+    await client.post("/api/searches", json=SEARCH_BODY)  # price_max = 80
+    await asyncio.sleep(0.1)
+
+    deps.ebay.over_ceiling_calls = 0
+    await client.post("/api/searches/pi-4/poll")  # auc-1 still present in results
+    await asyncio.sleep(0.1)
+
+    # Nothing dropped out of range, so the extra eBay query must not be issued.
+    assert deps.ebay.over_ceiling_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_ended_auction_is_auto_archived_by_end_time(env):
+    """An auction is archived once its captured end time passes, without needing
+    the getItems liveness check — the search-only auto-archive path."""
+    from decimal import Decimal
+    from app.models import Listing
+
+    client, manager, deps, _ = env
+    ended = Listing(
+        item_id="auc-1", title="Auction", price=Decimal("30.00"),
+        current_bid_price=Decimal("30.00"), buying_options=["AUCTION"],
+        item_web_url="https://www.ebay.co.uk/itm/auc",
+        end_time="2000-01-01T00:00:00.000Z",  # already in the past
+    )
+    deps.ebay.listings = [ended]
+    await client.post("/api/searches", json=SEARCH_BODY)
+    await asyncio.sleep(0.1)  # tick 1 records the hit (the sweep runs before it)
+
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert [h["item_id"] for h in active] == ["auc-1"]
+
+    # It ends and drops out of results; the next poll archives it from the
+    # stored end time alone.
+    deps.ebay.listings = []
+    await client.post("/api/searches/pi-4/poll")
+    await asyncio.sleep(0.1)
+
+    assert (await client.get("/api/hits", params={"archived": "false"})).json()["hits"] == []
+    archived = (await client.get("/api/hits", params={"archived": "true"})).json()["hits"]
+    assert [h["item_id"] for h in archived] == ["auc-1"]
+
+
+@pytest.mark.asyncio
+async def test_live_auction_not_archived_before_end_time(env):
+    """A still-running auction (end time in the future) must never be archived."""
+    from decimal import Decimal
+    from app.models import Listing
+
+    client, manager, deps, _ = env
+    live = Listing(
+        item_id="auc-1", title="Auction", price=Decimal("30.00"),
+        current_bid_price=Decimal("30.00"), buying_options=["AUCTION"],
+        item_web_url="https://www.ebay.co.uk/itm/auc",
+        end_time="2999-01-01T00:00:00.000Z",  # far in the future
+    )
+    deps.ebay.listings = [live]
+    await client.post("/api/searches", json=SEARCH_BODY)
+    await asyncio.sleep(0.1)
+    await client.post("/api/searches/pi-4/poll")
+    await asyncio.sleep(0.1)
+
+    active = (await client.get("/api/hits", params={"archived": "false"})).json()["hits"]
+    assert [h["item_id"] for h in active] == ["auc-1"]
+    assert (await client.get("/api/hits", params={"archived": "true"})).json()["hits"] == []
 
 
 @pytest.mark.asyncio

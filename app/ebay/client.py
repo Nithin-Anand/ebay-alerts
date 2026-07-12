@@ -122,20 +122,28 @@ def _is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError))
 
 
+def end_time_passed(end_time: str | None) -> bool:
+    """
+    True if an ISO-8601 end time is in the past. A missing or unparseable value
+    counts as not-ended — we never archive on ambiguous data.
+    """
+    if not end_time:
+        return False
+    try:
+        # eBay uses a trailing 'Z'; fromisoformat only accepts an offset.
+        end = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return end <= datetime.now(timezone.utc)
+
+
 def _has_ended(listing: Listing) -> bool:
     """
     True if an auction's end time is in the past. getItems can keep returning
     an ended auction for a while after it closes, so a past end_time means the
     listing is no longer active even though eBay still serves it.
     """
-    if not listing.end_time:
-        return False
-    try:
-        # eBay uses a trailing 'Z'; fromisoformat only accepts an offset.
-        end = datetime.fromisoformat(listing.end_time.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    return end <= datetime.now(timezone.utc)
+    return end_time_passed(listing.end_time)
 
 
 class EbayClient:

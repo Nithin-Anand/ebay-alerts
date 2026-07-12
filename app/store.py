@@ -39,6 +39,10 @@ _MIGRATIONS = [
     # was archived after being confirmed no longer active (NULL = still live).
     ("hits", "last_checked_at", "TEXT"),
     ("hits", "archived_at", "TEXT"),
+    # Auction end time (ISO 8601), captured from eBay results so an ended
+    # auction can be archived once it vanishes from search — the search-only
+    # substitute for the getItems liveness check.
+    ("hits", "end_time", "TEXT"),
 ]
 
 
@@ -117,6 +121,7 @@ class Store:
         verdict: str | None = None,
         score: int | None = None,
         notified: bool = False,
+        end_time: str | None = None,
     ) -> None:
         """Write a full hit record to the hits table for audit / retrospective queries."""
         now = datetime.now(timezone.utc).isoformat()
@@ -127,13 +132,41 @@ class Store:
             """
             INSERT OR REPLACE INTO hits
               (search_id, item_id, title, price, buying_options, url,
-               verdict, score, notified, created_at, last_checked_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               verdict, score, notified, created_at, last_checked_at, end_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (search_id, item_id, title, price, options, url,
-             verdict, score, int(notified), now, now),
+             verdict, score, int(notified), now, now, end_time),
         )
         await self._db.commit()
+
+    async def set_end_times(self, rows: list[tuple[str, str, str]]) -> None:
+        """
+        Record/refresh the auction end time on existing hits. Each row is
+        (search_id, item_id, end_time). Only rows already present are touched,
+        so this safely backfills end times for hits recorded before the item's
+        end time was being captured.
+        """
+        if not rows:
+            return
+        await self._db.executemany(
+            "UPDATE hits SET end_time = ? WHERE search_id = ? AND item_id = ?",
+            [(end_time, sid, iid) for sid, iid, end_time in rows],
+        )
+        await self._db.commit()
+
+    async def auction_end_times(self, search_id: str) -> list[tuple[str, str]]:
+        """
+        (item_id, end_time) for this search's still-active auction hits that have
+        a recorded end time — the caller archives the ones whose auction has ended.
+        """
+        async with self._db.execute(
+            "SELECT item_id, end_time FROM hits "
+            "WHERE search_id = ? AND archived_at IS NULL "
+            "AND buying_options LIKE '%AUCTION%' AND end_time IS NOT NULL",
+            (search_id,),
+        ) as cursor:
+            return [(row[0], row[1]) async for row in cursor]
 
     async def raise_auction_prices(
         self, prices: list[tuple[str, str, float]]
@@ -156,6 +189,21 @@ class Store:
             [(price, sid, iid, price) for sid, iid, price in prices],
         )
         await self._db.commit()
+
+    async def active_auction_item_ids(self, search_id: str) -> set[str]:
+        """
+        Item ids of this search's still-active auction hits. Used to decide
+        whether the above-ceiling refresh query is worth making: if one of these
+        is missing from the normal results, an auction may have outgrown the
+        price range, so re-query for it — otherwise skip the extra API call.
+        """
+        async with self._db.execute(
+            "SELECT item_id FROM hits "
+            "WHERE search_id = ? AND archived_at IS NULL "
+            "AND buying_options LIKE '%AUCTION%'",
+            (search_id,),
+        ) as cursor:
+            return {row[0] async for row in cursor}
 
     async def delete_hits(self, keys: list[tuple[str, str]]) -> int:
         """

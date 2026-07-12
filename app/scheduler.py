@@ -6,9 +6,9 @@ from pathlib import Path
 import structlog
 
 from .config_loader import save_searches
-from .ebay.client import EbayClient
+from .ebay.client import EbayClient, end_time_passed
 from .llm import OllamaClient
-from .models import Search, Verdict
+from .models import Listing, Search, Verdict
 from .notifier import PushoverNotifier
 from .store import Store
 
@@ -52,6 +52,44 @@ def _should_notify(search: Search, verdict: Verdict | None) -> bool:
     return True
 
 
+async def _fetch_over_ceiling(
+    search: Search, deps: Deps, present_ids: set[str]
+) -> list[Listing]:
+    """
+    Re-query the price band above a search's price_max to catch auctions whose
+    bid has climbed out of the capped results but are still live on eBay.
+
+    To avoid wasting API calls, this only fires when the search has a ceiling AND
+    one of its still-active auction hits is missing from the normal results
+    (`present_ids`) — i.e. something may actually have dropped out of range. When
+    every tracked auction is still present there is nothing to refresh, so we
+    skip the extra call.
+
+    Returns [] when there's nothing to do, or on error — this is best-effort
+    price upkeep, so a failure here must never disrupt the main poll. Sorted
+    price-ascending so items just over the ceiling (the ones most likely to have
+    only recently departed the results) come first within the fetch limit.
+    """
+    if search.filters.price_max is None:
+        return []
+    tracked = await deps.store.active_auction_item_ids(search.id)
+    if not tracked - present_ids:
+        return []  # every tracked auction is still in the capped results
+    over = search.model_copy(
+        update={
+            "filters": search.filters.model_copy(
+                update={"price_min": search.filters.price_max, "price_max": None}
+            ),
+            "sort": "price_asc",
+        }
+    )
+    try:
+        return await deps.ebay.search(over)
+    except Exception as exc:
+        log.warning("over-ceiling refresh failed", search_id=search.id, error=str(exc))
+        return []
+
+
 async def _tick(search: Search, deps: Deps, status: SearchStatus) -> None:
     """Run one poll cycle for a search."""
     status.last_poll_at = datetime.now(timezone.utc).isoformat()
@@ -65,27 +103,58 @@ async def _tick(search: Search, deps: Deps, status: SearchStatus) -> None:
     status.last_error = None
     status.last_result_count = len(listings)
 
+    # An auction whose bid climbs above the search's price_max drops out of the
+    # price-capped results, so eBay stops returning it here. Re-query the band
+    # above the ceiling to catch such items while they're still live and keep
+    # their stored price / liveness in step. This supplementary search only ever
+    # updates already-recorded hits — it never creates hits or notifications.
+    over_listings = await _fetch_over_ceiling(
+        search, deps, present_ids={l.item_id for l in listings}
+    )
+    live_listings = listings + over_listings
+
+    if live_listings:
+        # Keep the stored price of previously-seen auctions in step with their
+        # live high bid, even when no new items showed up this poll.
+        auction_prices = [
+            (search.id, l.item_id, float(l.display_price))
+            for l in live_listings
+            if l.is_auction
+        ]
+        await deps.store.raise_auction_prices(auction_prices)
+
+        # Everything returned is provably live: refresh check time (so the
+        # pruner deprioritises them) and revive any that were wrongly archived.
+        present_keys = [(search.id, l.item_id) for l in live_listings]
+        await deps.store.mark_checked(present_keys)
+        await deps.store.unarchive_hits(present_keys)
+
+        # Capture/refresh each auction's end time while we can see it, so it can
+        # still be archived after it ends and disappears from every result set.
+        await deps.store.set_end_times(
+            [(search.id, l.item_id, l.end_time)
+             for l in live_listings if l.is_auction and l.end_time]
+        )
+
+    # Archive auctions whose recorded end time has passed. eBay stops returning
+    # ended auctions, so this is the search-only stand-in for the (unavailable)
+    # getItems liveness check. Runs every poll, even when there are no results.
+    ended = [
+        (search.id, iid)
+        for iid, end in await deps.store.auction_end_times(search.id)
+        if end_time_passed(end)
+    ]
+    if ended:
+        archived = await deps.store.archive_hits(ended)
+        if archived:
+            log.info("archived ended auctions", search_id=search.id, count=archived)
+
     if not listings:
         log.debug("no results", search_id=search.id)
         return
 
     item_ids = [listing.item_id for listing in listings]
     new_ids = await deps.store.filter_unseen(search.id, item_ids)
-
-    # Keep the stored price of previously-seen auctions in step with their
-    # live high bid, even when no new items showed up this poll.
-    auction_prices = [
-        (search.id, l.item_id, float(l.display_price))
-        for l in listings
-        if l.is_auction
-    ]
-    await deps.store.raise_auction_prices(auction_prices)
-
-    # Everything in the results is provably live: refresh their check time (so
-    # the pruner deprioritises them) and revive any that were wrongly archived.
-    present_keys = [(search.id, iid) for iid in item_ids]
-    await deps.store.mark_checked(present_keys)
-    await deps.store.unarchive_hits(present_keys)
 
     if not new_ids:
         log.debug("no new items", search_id=search.id, checked=len(listings))
@@ -117,6 +186,7 @@ async def _tick(search: Search, deps: Deps, status: SearchStatus) -> None:
             verdict=verdict.recommend if verdict else None,
             score=verdict.score if verdict else None,
             notified=notify,
+            end_time=listing.end_time,
         )
 
 
